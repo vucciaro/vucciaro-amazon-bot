@@ -3,3 +3,4 @@ python-telegram-bot==20.7
    pytz==2023.3
    asyncio
 requests==2.32.4
+python-dotenv==1.0.1
