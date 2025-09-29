@@ -63,11 +63,8 @@ class TelegramKeepaBot:
             
             params = {
                 'key': self.keepa_api_key,
-                'domain': '5' if self.amazon_domain == 'it' else '1',  # 5=IT, 1=US
+                'domain': '5'
                 'category': category,
-                'range': '30',  # Ultimi 30 giorni
-                'current': '1',  # Solo prodotti attualmente disponibili
-                'out': '0',     # Formato output
                 'limit': limit
             }
             
