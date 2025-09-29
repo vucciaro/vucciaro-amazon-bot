@@ -63,8 +63,8 @@ class TelegramKeepaBot:
             
             params = {
                 'key': self.keepa_api_key,
-                'domain': '5'
-                'category': category
+                'domain': '5',
+                'category': category,
                 'limit': limit
             }
             
