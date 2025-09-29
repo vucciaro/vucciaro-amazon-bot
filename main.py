@@ -22,7 +22,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class TelegramKeepaBot:
-    def __init__(self):
+    def get_wait_minutes(self):
+    """Restituisce minuti di attesa in base all'ora"""
+    now = datetime.now(self.timezone)
+    hour = now.hour
+    
+    # Ore di punta: 9-13 e 18-22 = post ogni 10 minuti
+    if (9 <= hour <= 13) or (18 <= hour <= 22):
+        return 10
+    # Ore normali: 14-17 = ogni 15 minuti  
+    elif 14 <= hour <= 17:
+        return 15
+    # Ore basse: 8, 23 = ogni 30 minuti
+    else:
+        return 30
         # Variabili d'ambiente
         self.telegram_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.channel_id = os.getenv('TELEGRAM_CHANNEL_ID')
@@ -54,31 +67,46 @@ class TelegramKeepaBot:
         logger.info("Bot inizializzato correttamente")
 
     def get_keepa_deals(self, limit=5):
-        """Ottieni deals da Keepa API"""
+    """Cerca in 3 categorie diverse per massima varietà"""
+    all_products = []
+    categories_to_try = random.sample(self.categories, min(3, len(self.categories)))
+    
+    for category in categories_to_try:
         try:
-            category = random.choice(self.categories)
-            
-            # URL API Keepa per ottenere prodotti in offerta
-            url = "https://api.keepa.com/product"
+            query = {
+                'domainId': 8,
+                'includeCategories': [category],
+                'isLowest90': True,
+                'deltaPercentRange': [40, 99],
+                'minRating': 40,
+                'mustHaveAmazonOffer': True,
+                'page': 0
+            }
             
             params = {
                 'key': self.keepa_api_key,
-                'domain': '5',
-                'category': category,
-                'limit': limit
+                'selection': json.dumps(query)
             }
             
-            response = requests.get(url, params=params, timeout=30)
+            response = requests.get('https://api.keepa.com/deal', params=params, timeout=30)
+            
             if response.status_code == 200:
                 data = response.json()
-                return self.parse_keepa_products(data)
-            else:
-                logger.error(f"Errore Keepa API: {response.status_code}")
-                return []
-                        
+                if 'deals' in data and 'dr' in data['deals']:
+                    deals = data['deals']['dr']
+                    all_products.extend(self.parse_browsing_deals(deals))
+            
+            # Piccola pausa tra chiamate
+            import time
+            time.sleep(0.5)
+                    
         except Exception as e:
-            logger.error(f"Errore durante il recupero deals: {e}")
-            return []
+            logger.error(f"Errore categoria {category}: {e}")
+            continue
+    
+    # Mescola e prendi i migliori
+    random.shuffle(all_products)
+    return all_products[:limit * 3]  # Più prodotti per varietà
 
     def parse_keepa_products(self, data):
         """Processa i dati dei prodotti da Keepa"""
@@ -181,37 +209,34 @@ class TelegramKeepaBot:
         logger.info(f"Inviati {len(products)} prodotti")
 
     async def run_scheduler(self):
-        """Scheduler principale che gestisce i post"""
-        logger.info("Scheduler avviato!")
-        
-        while True:
-            try:
-                now = datetime.now(self.timezone)
+    logger.info("Scheduler avviato!")
+    
+    while True:
+        try:
+            now = datetime.now(self.timezone)
+            
+            if 8 <= now.hour <= 22:
+                await self.post_deals()
                 
-                # Posta solo durante il giorno (8-22)
-                if 8 <= now.hour <= 22:
-                    await self.post_deals()
+                # Attesa dinamica in base all'orario
+                wait_minutes = self.get_wait_minutes()
+                next_post = now + timedelta(minutes=wait_minutes)
+                logger.info(f"Prossimo post tra {wait_minutes} minuti: {next_post.strftime('%H:%M')}")
+                
+                await asyncio.sleep(wait_minutes * 60)
+            else:
+                # Pausa notturna
+                tomorrow_8am = now.replace(hour=8, minute=0, second=0, microsecond=0)
+                if now.hour >= 8:
+                    tomorrow_8am += timedelta(days=1)
+                
+                sleep_seconds = (tomorrow_8am - now).total_seconds()
+                logger.info(f"Pausa notturna fino alle 08:00")
+                await asyncio.sleep(sleep_seconds)
                     
-                    # Calcola prossimo post
-                    next_post = now + timedelta(minutes=self.minutes_between_posts)
-                    logger.info(f"Prossimo post: {next_post.strftime('%H:%M')}")
-                    
-                    # Aspetta fino al prossimo post
-                    await asyncio.sleep(self.minutes_between_posts * 60)
-                else:
-                    # Durante la notte aspetta fino alle 8:00
-                    tomorrow_8am = now.replace(hour=8, minute=0, second=0, microsecond=0)
-                    if now.hour >= 8:
-                        tomorrow_8am += timedelta(days=1)
-                    
-                    sleep_seconds = (tomorrow_8am - now).total_seconds()
-                    logger.info(f"Pausa notturna. Riprendo alle 08:00 ({sleep_seconds/3600:.1f} ore)")
-                    await asyncio.sleep(sleep_seconds)
-                    
-            except Exception as e:
-                logger.error(f"Errore nello scheduler: {e}")
-                # Aspetta 5 minuti prima di riprovare
-                await asyncio.sleep(300)
+        except Exception as e:
+            logger.error(f"Errore scheduler: {e}")
+            await asyncio.sleep(300)
 
     async def test_connection(self):
         """Testa le connessioni"""
