@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 
 class TelegramKeepaBot:
     def get_wait_minutes(self):
-    """Restituisce minuti di attesa in base all'ora"""
-    now = datetime.now(self.timezone)
-    hour = now.hour
+        """Restituisce minuti di attesa in base all'ora"""
+        now = datetime.now(self.timezone)
+        hour = now.hour
     
     # Ore di punta: 9-13 e 18-22 = post ogni 10 minuti
     if (9 <= hour <= 13) or (18 <= hour <= 22):
@@ -67,9 +67,9 @@ class TelegramKeepaBot:
         logger.info("Bot inizializzato correttamente")
 
     def get_keepa_deals(self, limit=5):
-    """Cerca in 3 categorie diverse per massima varietà"""
-    all_products = []
-    categories_to_try = random.sample(self.categories, min(3, len(self.categories)))
+        """Cerca in 3 categorie diverse per massima varietà"""
+        all_products = []
+        categories_to_try = random.sample(self.categories, min(3, len(self.categories)))
     
     for category in categories_to_try:
         try:
@@ -166,7 +166,7 @@ class TelegramKeepaBot:
         return message
 
     async def send_product_to_channel(self, product):
-        """Invia prodotto al canale Telegram"""
+              """Invia prodotto al canale Telegram"""
         try:
             message = await self.format_product_message(product)
             
@@ -188,8 +188,8 @@ class TelegramKeepaBot:
             return False
 
     async def post_deals(self):
-        """Pubblica deals sul canale"""
-        logger.info("Cercando nuove offerte...")
+              """Pubblica deals sul canale"""
+              logger.info("Cercando nuove offerte...")
         
         # Ottieni prodotti da Keepa
         products = self.get_keepa_deals(limit=3)
@@ -209,7 +209,7 @@ class TelegramKeepaBot:
         logger.info(f"Inviati {len(products)} prodotti")
 
     async def run_scheduler(self):
-    logger.info("Scheduler avviato!")
+              logger.info("Scheduler avviato!")
     
     while True:
         try:
@@ -239,16 +239,16 @@ class TelegramKeepaBot:
             await asyncio.sleep(300)
 
     async def test_connection(self):
-        """Testa le connessioni"""
-        logger.info("🔄 Testando connessioni...")
+              """Testa le connessioni"""
+              logger.info("🔄 Testando connessioni...")
         
         # Test bot Telegram
         try:
             me = await self.bot.get_me()
             logger.info(f"✅ Bot Telegram OK: @{me.username}")
         except Exception as e:
-            logger.error(f"❌ Errore bot Telegram: {e}")
-            return False
+               logger.error(f"❌ Errore bot Telegram: {e}")
+         return False
         
         # Test canale
         try:
@@ -275,8 +275,8 @@ class TelegramKeepaBot:
         return True
 
 async def main():
-    """Funzione principale"""
-    logger.info("🚀 Avvio Bot Telegram-Keepa...")
+          """Funzione principale"""
+          logger.info("🚀 Avvio Bot Telegram-Keepa...")
     
     # Verifica variabili d'ambiente
     required_vars = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHANNEL_ID', 'KEEPA_API_KEY']
