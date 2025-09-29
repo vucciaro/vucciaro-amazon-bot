@@ -79,7 +79,7 @@ class TelegramKeepaBot:
                     'domainId': 8,
                     'includeCategories': [category],
                     'isLowest90': True,
-                    'deltaPercentRange': [40, 99],
+                    'deltaPercentRange': [10, 99],
                     'minRating': 40,
                     'mustHaveAmazonOffer': True,
                     'page': 0
@@ -243,7 +243,7 @@ class TelegramKeepaBot:
             try:
                 now = datetime.now(self.timezone)
                 
-                if 8 <= now.hour <= 22:
+                if 8 <= now.hour <= 1:
                     await self.post_deals()
                     
                     # Attesa dinamica in base all'orario
@@ -253,9 +253,13 @@ class TelegramKeepaBot:
                     
                     await asyncio.sleep(wait_minutes * 60)
                 else:
-                    # Pausa notturna
+                    # Pausa notturna dalle 1:00 alle 8:00
                     tomorrow_8am = now.replace(hour=8, minute=0, second=0, microsecond=0)
-                    if now.hour >= 8:
+                    if now.hour >= 1 and now.hour < 8:
+                        # Siamo già nella notte, risveglio oggi alle 8
+                        pass
+                    else:
+                        # Dopo l'1 di notte, risveglio domani
                         tomorrow_8am += timedelta(days=1)
                     
                     sleep_seconds = (tomorrow_8am - now).total_seconds()
