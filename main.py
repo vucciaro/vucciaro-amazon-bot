@@ -38,16 +38,17 @@ class TelegramKeepaBot:
         
         # Lista di categorie Amazon popolari
         self.categories = [
-            1,    # Elettronica
-            2,    # Casa e giardino 
-            3,    # Abbigliamento, scarpe e borse
-            4,    # Sport e tempo libero
-            5,    # Bellezza
-            6,    # Salute e cura della persona
-            7,    # Giocattoli
-            8,    # Automotive
-            9,    # Fai da te
-            10,   # Alimentari
+            412609031,     # Elettronica
+            6198092031,    # Bellezza
+            1571280031,    # Auto e Moto
+            524015031,     # Casa e cucina
+            635016031,     # Giardino e giardinaggio
+            523997031,     # Giochi e giocattoli
+            1443735031,    # Grandi elettrodomestici
+            425916031,     # Informatica
+            411663031,     # Libri
+            5512286031,    # Moda
+            524012031,     # Sport e tempo libero
         ]
         
         logger.info("Bot inizializzato correttamente")
