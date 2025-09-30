@@ -106,10 +106,21 @@ class TelegramKeepaBot:
                 title = deal.get('title', 'Prodotto Amazon')
                 
                 # Prezzo attuale in centesimi
-                current_price = deal.get('current', 0) / 100 if deal.get('current') else 0
+                # Prezzo attuale - può essere numero o lista
+                current = deal.get('current', 0)
+                if isinstance(current, list):
+                    # Se è lista, prendi l'ultimo valore
+                    current_price = current[-1] / 100 if current and current[-1] else 0
+                elif isinstance(current, (int, float)):
+                    # Se è numero, usalo direttamente
+                    current_price = current / 100 if current else 0
+                else:
+                    current_price = 0
                 
                 # Percentuale sconto
                 delta = deal.get('deltaPercent', 0)
+                if isinstance(delta, list):
+                    delta = delta[-1] if delta else 0
                 
                 if current_price > 0 and asin:
                     affiliate_link = f"https://www.amazon.{self.amazon_domain}/dp/{asin}?tag={self.amazon_tag}"
