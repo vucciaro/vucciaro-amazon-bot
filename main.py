@@ -29,167 +29,129 @@ class TelegramKeepaBot:
         self.keepa_api_key = os.getenv('KEEPA_API_KEY')
         self.amazon_tag = os.getenv('AMAZON_ASSOC_TAG', 'vucciaro00-21')
         self.amazon_domain = os.getenv('AMAZON_DOMAIN', 'it')
-        self.posts_per_day = int(os.getenv('POSTS_PER_DAY', '25'))
-        self.minutes_between_posts = int(os.getenv('MINUTES_BETWEEN_POSTS', '30'))
         self.timezone = pytz.timezone(os.getenv('TIMEZONE', 'Europe/Rome'))
         
         # Inizializza bot Telegram
         self.bot = Bot(token=self.telegram_token)
         
-        # Lista di categorie Amazon popolari
-        self.categories = [
-            412609031,     # Elettronica
-            6198092031,    # Bellezza
-            1571280031,    # Auto e Moto
-            524015031,     # Casa e cucina
-            635016031,     # Giardino e giardinaggio
-            523997031,     # Giochi e giocattoli
-            1443735031,    # Grandi elettrodomestici
-            425916031,     # Informatica
-            411663031,     # Libri
-            5512286031,    # Moda
-            524012031,     # Sport e tempo libero
-        ]
-        
-        logger.info("Bot inizializzato correttamente")
-
-    def get_wait_minutes(self):
-        """Restituisce minuti di attesa in base all'ora"""
-        now = datetime.now(self.timezone)
-        hour = now.hour
-        
-        # Ore di punta: 9-13 e 18-22 = post ogni 10 minuti
-        if (9 <= hour <= 13) or (18 <= hour <= 22):
-            return 10
-        # Ore normali: 14-17 = ogni 15 minuti  
-        elif 14 <= hour <= 17:
-            return 15
-        # Ore basse: 8, 23 = ogni 30 minuti
-        else:
-            return 30
+        logger.info("✅ Bot inizializzato correttamente")
 
     def get_keepa_deals(self, limit=5):
-        """Cerca in 3 categorie diverse per massima varietà"""
-        all_products = []
-        categories_to_try = random.sample(self.categories, min(3, len(self.categories)))
-        
-        for category in categories_to_try:
-            try:
-                query = {
-                    'domainId': 8,
-                    'includeCategories': [category],
-                    'isLowest90': True,
-                    'deltaPercentRange': [10, 99],
-                    'minRating': 40,
-                    'mustHaveAmazonOffer': True,
-                    'page': 0
-                }
-                
-                params = {
-                    'key': self.keepa_api_key,
-                    'selection': json.dumps(query)
-                }
-                
-                response = requests.get('https://api.keepa.com/deal', params=params, timeout=30)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if 'deals' in data and 'dr' in data['deals']:
-                        deals = data['deals']['dr']
-                        all_products.extend(self.parse_browsing_deals(deals))
-                
-                # Piccola pausa tra chiamate
-                import time
-                time.sleep(0.5)
-                        
-            except Exception as e:
-                logger.error(f"Errore categoria {category}: {e}")
-                continue
-        
-        # Mescola e prendi i migliori
-        random.shuffle(all_products)
-        return all_products[:limit * 3]  # Più prodotti per varietà
-
-    def parse_keepa_products(self, data):
-        """Processa i dati dei prodotti da Keepa"""
-        products = []
-        
-        if 'products' not in data:
-            return products
+        """Cerca offerte usando la query Keepa corretta"""
+        try:
+            # Query ESATTA dal tuo screenshot Keepa
+            query = {
+                "page": 0,
+                "domainId": "8",
+                "excludeCategories": [],
+                "includeCategories": [],
+                "priceTypes": [0],
+                "deltaPercentRange": [10, 70],
+                "salesRankRange": [-1, -1],
+                "currentRange": [500, 40000],
+                "minRating": -1,
+                "isLowest": False,
+                "isLowest90": False,
+                "isLowestOffer": False,
+                "isOutOfStock": False,
+                "titleSearch": "",
+                "isRangeEnabled": True,
+                "isFilterEnabled": True,
+                "filterErotic": True,
+                "singleVariation": True,
+                "hasReviews": False,
+                "isPrimeExclusive": False,
+                "mustHaveAmazonOffer": False,
+                "mustNotHaveAmazonOffer": False,
+                "sortType": 4,
+                "dateRange": 1,
+                "warehouseConditions": [1, 2, 3, 4, 5],
+                "deltaLastRange": [0, 2147483647]
+            }
             
-        for product in data['products'][:5]:  # Primi 5 prodotti
-            try:
-                asin = product.get('asin', '')
-                title = product.get('title', 'Prodotto Amazon')
+            params = {
+                'key': self.keepa_api_key,
+                'selection': json.dumps(query)
+            }
+            
+            logger.info("🔍 Chiamata API Keepa in corso...")
+            response = requests.get('https://api.keepa.com/deal', params=params, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"📦 Risposta Keepa ricevuta")
                 
-                # Prezzo attuale (in centesimi)
-                current_price = None
-                if 'csv' in product and len(product['csv']) > 1:
-                    prices = product['csv'][1]  # Prezzo Amazon
-                    if prices and len(prices) >= 2:
-                        current_price = prices[-1] / 100  # Converti da centesimi
-                
-                if current_price and current_price > 0:
-                    # Crea link affiliato
-                    affiliate_link = f"https://www.amazon.{self.amazon_domain}/dp/{asin}?tag={self.amazon_tag}"
-                    
-                    products.append({
-                        'asin': asin,
-                        'title': title,
-                        'price': current_price,
-                        'link': affiliate_link
-                    })
-                    
-            except Exception as e:
-                logger.error(f"Errore parsing prodotto: {e}")
-                continue
-                
-        return products
+                if 'deals' in data and 'dr' in data['deals']:
+                    deals = data['deals']['dr']
+                    logger.info(f"🎯 Trovati {len(deals)} deals")
+                    return self.parse_deals(deals, limit)
+                else:
+                    logger.warning("⚠️ Nessun deal nella risposta")
+                    return []
+            else:
+                logger.error(f"❌ Errore API Keepa: {response.status_code}")
+                return []
+                        
+        except Exception as e:
+            logger.error(f"❌ Errore get_keepa_deals: {e}")
+            return []
 
-    def parse_browsing_deals(self, deals):
-        """Processa i dati dei deals da Keepa"""
+    def parse_deals(self, deals, limit):
+        """Processa i deals da Keepa"""
         products = []
         
-        for deal in deals[:5]:
+        for deal in deals[:limit]:
             try:
                 asin = deal.get('asin', '')
                 title = deal.get('title', 'Prodotto Amazon')
+                
+                # Prezzo attuale in centesimi
                 current_price = deal.get('current', 0) / 100 if deal.get('current') else 0
                 
-                if current_price > 0:
+                # Percentuale sconto
+                delta = deal.get('deltaPercent', 0)
+                
+                if current_price > 0 and asin:
                     affiliate_link = f"https://www.amazon.{self.amazon_domain}/dp/{asin}?tag={self.amazon_tag}"
                     
                     products.append({
                         'asin': asin,
                         'title': title,
                         'price': current_price,
+                        'discount': delta,
                         'link': affiliate_link
                     })
                     
             except Exception as e:
-                logger.error(f"Errore parsing deal: {e}")
+                logger.error(f"❌ Errore parsing deal: {e}")
                 continue
                 
+        logger.info(f"✅ Processati {len(products)} prodotti validi")
         return products
 
     def format_product_message(self, product):
         """Formatta il messaggio per Telegram"""
         title = product['title'][:100] + "..." if len(product['title']) > 100 else product['title']
         price = f"€{product['price']:.2f}"
+        discount = int(product.get('discount', 0))
         
-        # Emoji casuali per rendere più accattivante
-        emojis = ["🔥", "⚡", "💥", "🎯", "✨", "🚀", "💎", "🎉"]
-        emoji = random.choice(emojis)
+        # Emoji in base allo sconto
+        if discount >= 50:
+            emoji = "🔥"
+        elif discount >= 30:
+            emoji = "⚡"
+        else:
+            emoji = "💎"
         
-        message = f"""{emoji} *OFFERTA AMAZON*
+        message = f"""{emoji} *OFFERTA AMAZON* -{discount}%
 
 📦 {title}
 
 💰 *Prezzo: {price}*
 
-🛒 [ACQUISTA QUI]({product['link']})
+🛒 [ACQUISTA ORA]({product['link']})
 
-#AmazonDeals #Offerte #Shopping"""
+#AmazonDeals #Offerte #Sconto{discount}"""
         
         return message
 
@@ -205,69 +167,96 @@ class TelegramKeepaBot:
                 disable_web_page_preview=False
             )
             
-            logger.info(f"Prodotto inviato: {product['asin']}")
+            logger.info(f"✅ Prodotto inviato: {product['asin']}")
             return True
             
         except TelegramError as e:
-            logger.error(f"Errore invio Telegram: {e}")
+            logger.error(f"❌ Errore Telegram: {e}")
             return False
         except Exception as e:
-            logger.error(f"Errore generico invio: {e}")
+            logger.error(f"❌ Errore generico: {e}")
             return False
 
     async def post_deals(self):
         """Pubblica deals sul canale"""
-        logger.info("Cercando nuove offerte...")
+        logger.info("🔄 Cercando nuove offerte...")
         
         # Ottieni prodotti da Keepa
         products = self.get_keepa_deals(limit=3)
         
         if not products:
-            logger.warning("Nessun prodotto trovato")
+            logger.warning("⚠️ Nessun prodotto trovato")
+            # Invia notifica che non ha trovato nulla
+            try:
+                await self.bot.send_message(
+                    chat_id=self.channel_id,
+                    text="⚠️ Nessuna offerta trovata in questo momento. Riprovo più tardi!"
+                )
+            except:
+                pass
             return
         
-        # Invia ogni prodotto
-        for product in products:
-            success = await self.send_product_to_channel(product)
-            if success:
-                # Aspetta tra un post e l'altro per evitare spam
-                await asyncio.sleep(random.randint(30, 90))
+        # Invia il primo prodotto
+        product = products[0]
+        success = await self.send_product_to_channel(product)
         
-        logger.info(f"Inviati {len(products)} prodotti")
+        if success:
+            logger.info(f"✅ Post pubblicato con successo!")
+        else:
+            logger.error(f"❌ Errore pubblicazione post")
 
     async def run_scheduler(self):
-        """Scheduler principale"""
-        logger.info("Scheduler avviato!")
+        """Scheduler principale - LOOP INFINITO"""
+        logger.info("🚀 Scheduler avviato! Bot attivo 24/7")
         
-        while True:
+        last_post_time = None
+        
+        while True:  # ← LOOP INFINITO - il bot non si ferma MAI
             try:
                 now = datetime.now(self.timezone)
+                current_time = now.strftime("%H:%M")
+                hour = now.hour
                 
-                if 8 <= now.hour <= 1:
-                    await self.post_deals()
-                    
-                    # Attesa dinamica in base all'orario
-                    wait_minutes = self.get_wait_minutes()
-                    next_post = now + timedelta(minutes=wait_minutes)
-                    logger.info(f"Prossimo post tra {wait_minutes} minuti: {next_post.strftime('%H:%M')}")
-                    
-                    await asyncio.sleep(wait_minutes * 60)
-                else:
-                    # Pausa notturna dalle 1:00 alle 8:00
-                    tomorrow_8am = now.replace(hour=8, minute=0, second=0, microsecond=0)
-                    if now.hour >= 1 and now.hour < 8:
-                        # Siamo già nella notte, risveglio oggi alle 8
-                        pass
+                # Log ogni ora per sapere che il bot è vivo
+                if now.minute == 0:
+                    logger.info(f"✅ Bot attivo - Ora: {current_time}")
+                
+                # Orario valido: dalle 8:00 alle 23:00
+                if 8 <= hour < 23:
+                    # Controlla se è ora di postare
+                    if last_post_time is None:
+                        # Primo post della giornata
+                        await self.post_deals()
+                        last_post_time = now
                     else:
-                        # Dopo l'1 di notte, risveglio domani
-                        tomorrow_8am += timedelta(days=1)
-                    
-                    sleep_seconds = (tomorrow_8am - now).total_seconds()
-                    logger.info(f"Pausa notturna fino alle 08:00")
-                    await asyncio.sleep(sleep_seconds)
+                        # Calcola minuti dall'ultimo post
+                        minutes_since_last = (now - last_post_time).total_seconds() / 60
                         
+                        # Posta ogni 30 minuti
+                        if minutes_since_last >= 30:
+                            await self.post_deals()
+                            last_post_time = now
+                            logger.info(f"⏰ Prossimo post tra 30 minuti")
+                
+                # Pausa notturna (23:00 - 8:00)
+                elif hour >= 23 or hour < 8:
+                    if now.minute == 0:  # Log solo una volta all'ora
+                        tomorrow_8am = now.replace(hour=8, minute=0, second=0, microsecond=0)
+                        if hour < 8:
+                            # Siamo già nella mattina presto
+                            pass
+                        else:
+                            # Dopo le 23, domani alle 8
+                            tomorrow_8am += timedelta(days=1)
+                        logger.info(f"😴 Pausa notturna - Risveglio alle 08:00")
+                        last_post_time = None  # Reset per nuovo giorno
+                
+                # Aspetta 60 secondi prima di ricontrollare
+                await asyncio.sleep(60)
+                
             except Exception as e:
-                logger.error(f"Errore scheduler: {e}")
+                logger.error(f"❌ Errore nel loop: {e}")
+                # In caso di errore, aspetta 5 minuti e riprova
                 await asyncio.sleep(300)
 
     async def test_connection(self):
@@ -286,7 +275,7 @@ class TelegramKeepaBot:
         try:
             await self.bot.send_message(
                 chat_id=self.channel_id,
-                text="🤖 Bot avviato correttamente!"
+                text="🤖 Bot avviato correttamente! Inizio ricerca offerte..."
             )
             logger.info("✅ Canale Telegram OK")
         except Exception as e:
@@ -297,9 +286,9 @@ class TelegramKeepaBot:
         try:
             products = self.get_keepa_deals(limit=1)
             if products:
-                logger.info("✅ Keepa API OK")
+                logger.info(f"✅ Keepa API OK - Trovati {len(products)} prodotti")
             else:
-                logger.warning("⚠️ Keepa API: nessun prodotto trovato")
+                logger.warning("⚠️ Keepa API: nessun prodotto trovato (normale se non ci sono offerte)")
         except Exception as e:
             logger.error(f"❌ Errore Keepa API: {e}")
             return False
