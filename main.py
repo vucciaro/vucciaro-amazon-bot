@@ -44,7 +44,7 @@ class TelegramKeepaBot:
                 "page": 0,
                 "domainId": "8",
                 "excludeCategories": [],
-                "includeCategories": [],
+                "includeCategories": [412609031, 6198092031, 524015031],
                 "priceTypes": [0],
                 "deltaPercentRange": [5, 90],
                 "salesRankRange": [-1, -1],
