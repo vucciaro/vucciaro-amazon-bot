@@ -63,7 +63,7 @@ class TelegramKeepaBot:
                 "isPrimeExclusive": False,
                 "mustHaveAmazonOffer": False,
                 "mustNotHaveAmazonOffer": False,
-                "sortType": 4,
+                "sortType": 1,  # Deal age - newest first,
                 "dateRange": 1,
                 "warehouseConditions": [1, 2, 3, 4, 5],
                 "deltaLastRange": [0, 2147483647]
