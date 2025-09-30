@@ -77,7 +77,7 @@ class TelegramKeepaBot:
             logger.info("🔍 Chiamata API Keepa in corso...")
             response = requests.get('https://api.keepa.com/deal', params=params, timeout=30)
             logger.info(f"📡 Status Keepa: {response.status_code}")
-            logger.info(f"📦 Risposta: {response.text[:500]}")
+            logger.info(f"📦 Risposta completa: {response.text[:2000]}")
             
             if response.status_code == 200:
                 data = response.json()
