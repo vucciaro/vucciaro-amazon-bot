@@ -42,7 +42,7 @@ class TelegramKeepaBot:
             # Query ESATTA dal tuo screenshot Keepa
             query = {
                 "page": 0,
-                "domainId": "8",
+                "domainId": 8,
                 "excludeCategories": [],
                 "includeCategories": [412609031, 6198092031, 524015031],
                 "priceTypes": [0],
