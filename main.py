@@ -84,9 +84,9 @@ class TelegramKeepaBot:
                 logger.info(f"📦 Risposta Keepa ricevuta")
                 
             if 'products' in data:
-                 deals = data['products']
-                 logger.info(f"🎯 Trovati {len(deals)} deals")
-                    return self.parse_deals(deals, limit)
+                deals = data['products']
+                logger.info(f"🎯 Trovati {len(deals)} deals")
+                return self.parse_deals(deals, limit)
                 else:
                     logger.warning("⚠️ Nessun deal nella risposta")
                     return []
