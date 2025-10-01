@@ -305,8 +305,8 @@ class TelegramKeepaBot:
                     interval = self.get_post_interval(hour)
                     logger.info(f"✅ Bot attivo - Ora: {current_time} | Intervallo: {interval} min")
                 
-                # Orario valido: dalle 8:00 alle 1:00
-                if 8 <= hour < 1:
+                # Orario valido: dalle 8:00 alle 24:00
+                if 8 <= hour < 24:
                     # 🆕 Calcola intervallo dinamico
                     post_interval = self.get_post_interval(hour)
                     
