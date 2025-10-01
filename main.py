@@ -34,30 +34,50 @@ class TelegramKeepaBot:
         # Inizializza bot Telegram
         self.bot = Bot(token=self.telegram_token)
         
+        # 🆕 TRACKING PRODOTTI PUBBLICATI (no doppioni)
+        self.published_asins = set()
+        self.published_asins_file = 'published_asins.json'
+        self.load_published_asins()
+        
         logger.info("✅ Bot inizializzato correttamente")
+
+    # 🆕 CARICA PRODOTTI GIÀ PUBBLICATI
+    def load_published_asins(self):
+        """Carica ASIN già pubblicati da file"""
+        try:
+            if os.path.exists(self.published_asins_file):
+                with open(self.published_asins_file, 'r') as f:
+                    data = json.load(f)
+                    # Mantieni solo ultimi 200 per non far crescere troppo
+                    self.published_asins = set(data[-200:])
+                    logger.info(f"📚 Caricati {len(self.published_asins)} ASIN già pubblicati")
+            else:
+                self.published_asins = set()
+                logger.info("📚 Nessun ASIN precedente, inizio da zero")
+        except Exception as e:
+            logger.error(f"❌ Errore caricamento ASIN: {e}")
+            self.published_asins = set()
+    
+    # 🆕 SALVA PRODOTTI PUBBLICATI
+    def save_published_asins(self):
+        """Salva ASIN pubblicati su file"""
+        try:
+            with open(self.published_asins_file, 'w') as f:
+                json.dump(list(self.published_asins), f)
+            logger.info(f"💾 Salvati {len(self.published_asins)} ASIN pubblicati")
+        except Exception as e:
+            logger.error(f"❌ Errore salvataggio ASIN: {e}")
 
     def get_keepa_deals(self, limit=5):
         """Cerca prodotti scontati usando Keepa search"""
         try:
-            # Ricerca prodotti con sconto significativo
-            params = {
-                'key': self.keepa_api_key,
-                'domain': 8,  # Amazon.it
-                'type': 'product',
-                'term': '',  # Vuoto per cercare tutto
-                'stats': 365,  # Statistiche ultimo anno
-                'history': 1,  # Include storico prezzi
-                'rating': 1,  # Include rating
-                'update': 0,
-                'to_update': False
-            }
+            logger.info("🔍 Chiamata API Keepa bestsellers in corso...")
             
-            logger.info("🔍 Chiamata API Keepa search in corso...")
-            # Prima ottieni alcuni ASIN popolari
+            # Ottieni bestseller da Keepa
             response = requests.get('https://api.keepa.com/bestsellers', params={
                 'key': self.keepa_api_key,
                 'domain': 8,
-                'category': '412609031'  # Elettronica
+                'category': '412609031'
             }, timeout=30)
             
             logger.info(f"📡 Status Keepa: {response.status_code}")
@@ -67,15 +87,28 @@ class TelegramKeepaBot:
                 logger.info(f"📦 Risposta Keepa ricevuta")
                 
                 if 'bestSellersList' in data and data['bestSellersList']:
-                    # Estrai ASIN dai bestseller
                     asins = []
-                    for item in data['bestSellersList']['asinList'][:limit * 2]:
+                    for item in data['bestSellersList']['asinList'][:limit * 4]:
                         if isinstance(item, str):
                             asins.append(item)
                     
                     if asins:
-                        # Ora cerca info dettagliate sui prodotti
-                        return self.get_product_details(asins[:limit])
+                        # FILTRA prodotti già pubblicati
+                        new_asins = [asin for asin in asins if asin not in self.published_asins]
+                        
+                        # Se tutti già pubblicati, reset
+                        if not new_asins:
+                            logger.info("♻️ Tutti i prodotti pubblicati! Reset lista...")
+                            self.published_asins.clear()
+                            self.save_published_asins()
+                            new_asins = asins
+                        
+                        # Randomizza per variare
+                        random.shuffle(new_asins)
+                        
+                        logger.info(f"🎲 Selezionati {len(new_asins[:limit])} prodotti nuovi da {len(asins)} totali")
+                        
+                        return self.get_product_details(new_asins[:limit])
                     
                 logger.warning("⚠️ Nessun bestseller trovato")
                 return []
@@ -108,26 +141,6 @@ class TelegramKeepaBot:
             return []
         except Exception as e:
             logger.error(f"❌ Errore get_product_details: {e}")
-            return []
-            
-            if response.status_code == 200:
-                data = response.json()
-                logger.info(f"📦 Risposta Keepa ricevuta: {len(data.get('products', []))} prodotti")
-                
-                if 'products' in data and data['products']:
-                    products = data['products']
-                    logger.info(f"🎯 Trovati {len(products)} prodotti")
-                    return self.parse_products(products, limit)
-                else:
-                    logger.warning("⚠️ Nessun prodotto nella risposta")
-                    return []
-            else:
-                logger.error(f"❌ Errore API Keepa: {response.status_code}")
-                logger.error(f"❌ Risposta: {response.text}")
-                return []
-                        
-        except Exception as e:
-            logger.error(f"❌ Errore get_keepa_deals: {e}")
             return []
 
     def parse_products(self, products, limit):
@@ -230,7 +243,11 @@ class TelegramKeepaBot:
                 disable_web_page_preview=False
             )
             
-            logger.info(f"✅ Prodotto inviato: {product['asin']}")
+            # 🆕 AGGIUNGI ASIN AI PUBBLICATI
+            self.published_asins.add(product['asin'])
+            self.save_published_asins()
+            
+            logger.info(f"✅ Prodotto inviato: {product['asin']} | Tot pubblicati: {len(self.published_asins)}")
             return True
             
         except TelegramError as e:
@@ -249,14 +266,6 @@ class TelegramKeepaBot:
         
         if not products:
             logger.warning("⚠️ Nessun prodotto trovato")
-            # Invia notifica che non ha trovato nulla
-            try:
-                await self.bot.send_message(
-                    chat_id=self.channel_id,
-                    text="⚠️ Nessuna offerta trovata in questo momento. Riprovo più tardi!"
-                )
-            except:
-                pass
             return
         
         # Invia il primo prodotto
@@ -268,9 +277,20 @@ class TelegramKeepaBot:
         else:
             logger.error(f"❌ Errore pubblicazione post")
 
+    # 🆕 CALCOLA INTERVALLO DINAMICO (15 min ore punta, 30 min normale)
+    def get_post_interval(self, hour):
+        """Restituisce intervallo in minuti in base all'ora"""
+        # ORE DI PUNTA: 10-13 e 18-21 → ogni 15 minuti
+        if (10 <= hour < 13) or (18 <= hour < 21):
+            return 15
+        # ORE NORMALI: ogni 30 minuti
+        else:
+            return 30
+
     async def run_scheduler(self):
         """Scheduler principale - LOOP INFINITO"""
         logger.info("🚀 Scheduler avviato! Bot attivo 24/7")
+        logger.info("⏰ Timing: 15 min (ore punta: 10-13, 18-21) | 30 min (ore normali)")
         
         last_post_time = None
         
@@ -282,35 +302,34 @@ class TelegramKeepaBot:
                 
                 # Log ogni ora per sapere che il bot è vivo
                 if now.minute == 0:
-                    logger.info(f"✅ Bot attivo - Ora: {current_time}")
+                    interval = self.get_post_interval(hour)
+                    logger.info(f"✅ Bot attivo - Ora: {current_time} | Intervallo: {interval} min")
                 
                 # Orario valido: dalle 8:00 alle 23:00
                 if 8 <= hour < 23:
+                    # 🆕 Calcola intervallo dinamico
+                    post_interval = self.get_post_interval(hour)
+                    
                     # Controlla se è ora di postare
                     if last_post_time is None:
                         # Primo post della giornata
                         await self.post_deals()
                         last_post_time = now
+                        logger.info(f"⏰ Prossimo post tra {post_interval} minuti")
                     else:
                         # Calcola minuti dall'ultimo post
                         minutes_since_last = (now - last_post_time).total_seconds() / 60
                         
-                        # Posta ogni 30 minuti
-                        if minutes_since_last >= 30:
+                        # 🆕 Posta in base all'intervallo dinamico
+                        if minutes_since_last >= post_interval:
                             await self.post_deals()
                             last_post_time = now
-                            logger.info(f"⏰ Prossimo post tra 30 minuti")
+                            next_interval = self.get_post_interval((now + timedelta(minutes=post_interval)).hour)
+                            logger.info(f"⏰ Prossimo post tra {next_interval} minuti")
                 
                 # Pausa notturna (23:00 - 8:00)
                 elif hour >= 23 or hour < 8:
                     if now.minute == 0:  # Log solo una volta all'ora
-                        tomorrow_8am = now.replace(hour=8, minute=0, second=0, microsecond=0)
-                        if hour < 8:
-                            # Siamo già nella mattina presto
-                            pass
-                        else:
-                            # Dopo le 23, domani alle 8
-                            tomorrow_8am += timedelta(days=1)
                         logger.info(f"😴 Pausa notturna - Risveglio alle 08:00")
                         last_post_time = None  # Reset per nuovo giorno
                 
@@ -360,7 +379,7 @@ class TelegramKeepaBot:
 
 async def main():
     """Funzione principale"""
-    logger.info("🚀 Avvio Bot Telegram-Keepa...")
+    logger.info("🚀 Avvio Bot Telegram-Keepa POTENZIATO...")
     
     # Verifica variabili d'ambiente
     required_vars = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHANNEL_ID', 'KEEPA_API_KEY']
