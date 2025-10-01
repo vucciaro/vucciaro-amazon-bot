@@ -166,11 +166,14 @@ class TelegramKeepaBot:
                 "page": 0,
                 "domainId": 8,
                 "includeCategories": [int(category['id'])],
+                "priceTypes": [0],
                 "deltaPercentRange": [15, 100],
                 "minRating": 40,
                 "isLowest90": True,
                 "currentRange": [500, 100000],
-                "sortType": 4
+                "dateRange": 0,
+                "sortType": 4,
+                "isRangeEnabled": True
             }
             
             # Chiama API Keepa Browsing Deals
