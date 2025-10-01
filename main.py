@@ -37,54 +37,37 @@ class TelegramKeepaBot:
         logger.info("✅ Bot inizializzato correttamente")
 
     def get_keepa_deals(self, limit=5):
-        """Cerca offerte usando la query Keepa corretta"""
+        """Cerca offerte usando l'API Keepa deals"""
         try:
-            # Query ESATTA dal tuo screenshot Keepa
-            query = {
-                "page": 0,
-                "domainId": 8,
-                "excludeCategories": [],
-                "includeCategories": [412609031, 6198092031, 524015031],
-                "priceTypes": [0],
-                "deltaPercentRange": [5, 90],
-                "salesRankRange": [-1, -1],
-                "currentRange": [100, 100000],
-                "minRating": -1,
-                "isLowest": False,
-                "isLowest90": False,
-                "isLowestOffer": False,
-                "isOutOfStock": False,
-                "titleSearch": "",
-                "isRangeEnabled": True,
-                "isFilterEnabled": True,
-                "filterErotic": True,
-                "singleVariation": True,
-                "hasReviews": False,
-                "isPrimeExclusive": False,
-                "mustHaveAmazonOffer": False,
-                "mustNotHaveAmazonOffer": False,
-                "sortType": 1,  # Deal age - newest first,
-                "dateRange": 1,
-                "warehouseConditions": [1, 2, 3, 4, 5],
-                "deltaLastRange": [0, 2147483647]
-            }
-            
+            # Usa l'endpoint deals invece di query
             params = {
                 'key': self.keepa_api_key,
-                'selection': json.dumps(query)
+                'domain': 8,  # Amazon.it
+                'page': 0,
+                'perPage': limit,
+                'excludeCategories': '',  # Vuoto per includere tutte
+                'includeCategories': '412609031,6198092031,524015031',  # Categorie come stringa
+                'priceTypes': 0,  # Buy Box price
+                'deltaRange': '5,90',  # Sconto tra 5% e 90%
+                'deltaPercent': 5,  # Minimo 5% di sconto
+                'currentRange': '100,100000',  # Prezzo tra 1€ e 1000€
+                'isRangeEnabled': True,
+                'isFilterEnabled': True,
+                'filterErotic': True,
+                'singleVariation': True,
+                'sortType': 1  # Newest first
             }
             
-            logger.info("🔍 Chiamata API Keepa in corso...")
-            response = requests.get('https://api.keepa.com/query', params=params, timeout=30)
+            logger.info("🔍 Chiamata API Keepa deals in corso...")
+            response = requests.get('https://api.keepa.com/deals', params=params, timeout=30)
             logger.info(f"📡 Status Keepa: {response.status_code}")
-            logger.info(f"📦 Risposta completa: {response.text[:2000]}")
             
             if response.status_code == 200:
                 data = response.json()
-                logger.info(f"📦 Risposta Keepa ricevuta")
+                logger.info(f"📦 Risposta Keepa ricevuta: {len(data.get('deals', []))} deals")
                 
-                if 'products' in data:
-                    deals = data['products']
+                if 'deals' in data and data['deals']:
+                    deals = data['deals']
                     logger.info(f"🎯 Trovati {len(deals)} deals")
                     return self.parse_deals(deals, limit)
                 else:
@@ -92,6 +75,7 @@ class TelegramKeepaBot:
                     return []
             else:
                 logger.error(f"❌ Errore API Keepa: {response.status_code}")
+                logger.error(f"❌ Risposta: {response.text}")
                 return []
                         
         except Exception as e:
@@ -104,25 +88,18 @@ class TelegramKeepaBot:
         
         for deal in deals[:limit]:
             try:
+                # L'API deals restituisce una struttura diversa
                 asin = deal.get('asin', '')
                 title = deal.get('title', 'Prodotto Amazon')
                 
-                # Prezzo attuale in centesimi
-                # Prezzo attuale - può essere numero o lista
-                current = deal.get('current', 0)
-                if isinstance(current, list):
-                    # Se è lista, prendi l'ultimo valore
-                    current_price = current[-1] / 100 if current and current[-1] else 0
-                elif isinstance(current, (int, float)):
-                    # Se è numero, usalo direttamente
-                    current_price = current / 100 if current else 0
-                else:
-                    current_price = 0
+                # Nell'API deals, il prezzo corrente è in 'current'
+                current_price = deal.get('current', 0)
+                # Il prezzo è già in centesimi, quindi dividi per 100
+                if current_price:
+                    current_price = current_price / 100
                 
-                # Percentuale sconto
-                delta = deal.get('deltaPercent', 0)
-                if isinstance(delta, list):
-                    delta = delta[-1] if delta else 0
+                # Lo sconto percentuale
+                discount = deal.get('deltaPercent', 0)
                 
                 if current_price > 0 and asin:
                     affiliate_link = f"https://www.amazon.{self.amazon_domain}/dp/{asin}?tag={self.amazon_tag}"
@@ -131,7 +108,7 @@ class TelegramKeepaBot:
                         'asin': asin,
                         'title': title,
                         'price': current_price,
-                        'discount': delta,
+                        'discount': discount,
                         'link': affiliate_link
                     })
                     
