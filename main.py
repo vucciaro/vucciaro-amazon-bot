@@ -75,7 +75,7 @@ class TelegramKeepaBot:
             }
             
             logger.info("🔍 Chiamata API Keepa in corso...")
-            response = requests.get('https://api.keepa.com/deal', params=params, timeout=30)
+            response = requests.get('https://api.keepa.com/query', params=params, timeout=30)
             logger.info(f"📡 Status Keepa: {response.status_code}")
             logger.info(f"📦 Risposta completa: {response.text[:2000]}")
             
@@ -83,9 +83,9 @@ class TelegramKeepaBot:
                 data = response.json()
                 logger.info(f"📦 Risposta Keepa ricevuta")
                 
-                if 'deals' in data and 'dr' in data['deals']:
-                    deals = data['deals']['dr']
-                    logger.info(f"🎯 Trovati {len(deals)} deals")
+            if 'products' in data:
+                 deals = data['products']
+                 logger.info(f"🎯 Trovati {len(deals)} deals")
                     return self.parse_deals(deals, limit)
                 else:
                     logger.warning("⚠️ Nessun deal nella risposta")
