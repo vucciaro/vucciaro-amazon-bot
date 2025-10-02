@@ -206,8 +206,13 @@ class TelegramKeepaBot:
                 asin = deal.get('asin', '')
                 title = deal.get('title', 'Prodotto Amazon')
                 
-                # Prezzo attuale
-                current_price = deal.get('current', 0) / 100 if deal.get('current') else 0
+                # FIX: current è un array [prezzo_centesimi, timestamp]
+                current = deal.get('current', [0])
+                current_price = 0
+                if current and isinstance(current, list) and len(current) > 0:
+                    current_price = current[0] / 100
+                elif isinstance(current, (int, float)):
+                    current_price = current / 100
                 
                 # Sconto percentuale
                 delta = deal.get('deltaPercent', 0)
