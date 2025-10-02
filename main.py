@@ -53,7 +53,7 @@ class TelegramKeepaBot:
         self.published_asins = self.load_published_asins()
         
         # Tracking Lightning Deals
-        self.use_lightning = True  # Alterna tra Lightning e Browsing
+        self.use_lightning = True
         
         logger.info("✅ Bot inizializzato - Browsing Deals + 7 categorie + Lightning Deals")
 
@@ -149,7 +149,7 @@ class TelegramKeepaBot:
                 "excludeCategories": [],
                 "priceTypes": [0],
                 "deltaPercentRange": [15, 100],
-                "currentRange": [500, 100000],  # €5 - €1000
+                "currentRange": [500, 100000],
                 "minRating": 40,
                 "isLowest90": True,
                 "isRangeEnabled": True,
@@ -207,12 +207,14 @@ class TelegramKeepaBot:
                 title = deal.get('title', 'Prodotto Amazon')
                 
                 # FIX: current è un array [prezzo_centesimi, timestamp]
-                current = deal.get('current', [0])
+                current = deal.get('current')
                 current_price = 0
-                if current and isinstance(current, list) and len(current) > 0:
-                    current_price = current[0] / 100
-                elif isinstance(current, (int, float)):
-                    current_price = current / 100
+                
+                if current:
+                    if isinstance(current, list) and len(current) > 0:
+                        current_price = current[0] / 100
+                    elif isinstance(current, (int, float)):
+                        current_price = current / 100
                 
                 # Sconto percentuale
                 delta = deal.get('deltaPercent', 0)
