@@ -45,7 +45,7 @@ class TelegramKeepaBot:
         # Rotazione pagine per variare risultati
         self.current_page = 0
         
-        # Tracking ASIN pubblicati
+        # Tracking ASIN pubblicati con timestamp
         self.storage_dir = Path('/data') if Path('/data').exists() else Path('.')
         self.published_file = self.storage_dir / 'published_asins.json'
         self.published_asins = self.load_published_asins()
@@ -56,27 +56,44 @@ class TelegramKeepaBot:
         logger.info("Bot inizializzato - Browsing Deals + Lightning Deals")
 
     def load_published_asins(self):
-        """Carica ASIN già pubblicati"""
+        """Carica ASIN già pubblicati con timestamp"""
         try:
             if self.published_file.exists():
                 with open(self.published_file, 'r') as f:
                     data = json.load(f)
+                    # Converti in dict se è ancora set (legacy)
+                    if isinstance(data, list):
+                        logger.info(f"Conversione da lista a dict con timestamp")
+                        data = {asin: datetime.now().isoformat() for asin in data}
                     logger.info(f"Caricati {len(data)} ASIN gia pubblicati")
-                    return set(data)
+                    return data
         except Exception as e:
             logger.error(f"Errore caricamento ASIN: {e}")
         
         logger.info("Nessun ASIN precedente, inizio da zero")
-        return set()
+        return {}
 
     def save_published_asins(self):
-        """Salva ASIN pubblicati"""
+        """Salva ASIN pubblicati con timestamp"""
         try:
             with open(self.published_file, 'w') as f:
-                json.dump(list(self.published_asins), f)
+                json.dump(self.published_asins, f)
             logger.info(f"Salvati {len(self.published_asins)} ASIN")
         except Exception as e:
             logger.error(f"Errore salvataggio ASIN: {e}")
+
+    def can_republish(self, asin):
+        """Verifica se un ASIN può essere ripubblicato (dopo 7 giorni)"""
+        if asin not in self.published_asins:
+            return True
+        
+        try:
+            last_posted = datetime.fromisoformat(self.published_asins[asin])
+            age_days = (datetime.now() - last_posted).days
+            return age_days >= 7
+        except:
+            # Se errore parsing, permetti ripubblicazione
+            return True
 
     def get_lightning_deals(self, limit=5):
         """Ottieni Lightning Deals da Keepa"""
@@ -97,13 +114,11 @@ class TelegramKeepaBot:
                     deals = data['lightningDeals']
                     logger.info(f"Trovati {len(deals)} Lightning Deals")
                     
-                    # Filtra ASIN non pubblicati
-                    new_deals = [d for d in deals if d.get('asin') not in self.published_asins]
+                    # Filtra ASIN che possono essere pubblicati
+                    new_deals = [d for d in deals if self.can_republish(d.get('asin'))]
                     
                     if not new_deals:
-                        logger.info("Tutti Lightning pubblicati! Reset...")
-                        self.published_asins.clear()
-                        self.save_published_asins()
+                        logger.info("Tutti Lightning recenti! Uso tutti disponibili...")
                         new_deals = deals
                     
                     # Prendi primi ASIN
@@ -184,16 +199,14 @@ class TelegramKeepaBot:
         """Processa i deals da Keepa"""
         products = []
         
-        # Filtra deals già pubblicati
-        new_deals = [d for d in deals if d.get('asin') not in self.published_asins]
+        # Filtra deals che possono essere pubblicati
+        new_deals = [d for d in deals if self.can_republish(d.get('asin'))]
         
         if not new_deals:
-            logger.info("Tutti i deals gia pubblicati! Reset...")
-            self.published_asins.clear()
-            self.save_published_asins()
+            logger.info("Tutti i deals pubblicati di recente! Uso tutti disponibili...")
             new_deals = deals
         
-        logger.info(f"{len(new_deals)} deals nuovi da {len(deals)} totali")
+        logger.info(f"{len(new_deals)} deals utilizzabili da {len(deals)} totali")
         
         for deal in new_deals[:limit]:
             try:
@@ -351,8 +364,8 @@ class TelegramKeepaBot:
                 disable_web_page_preview=False
             )
             
-            # Aggiungi ASIN ai pubblicati
-            self.published_asins.add(product['asin'])
+            # Aggiungi ASIN ai pubblicati con timestamp
+            self.published_asins[product['asin']] = datetime.now().isoformat()
             self.save_published_asins()
             
             logger.info(f"Prodotto inviato: {product['asin']} | Tot pubblicati: {len(self.published_asins)}")
@@ -366,32 +379,86 @@ class TelegramKeepaBot:
             return False
 
     async def post_deals(self):
-        """Pubblica deals sul canale"""
+        """Pubblica deals sul canale - GARANTISCE SEMPRE UN POST"""
         logger.info("Cercando nuove offerte...")
         
-        # Alterna tra Lightning Deals e Browsing Deals
+        products = []
+        
+        # STRATEGIA CASCATA: prova Lightning -> Browsing -> Allenta filtri
+        
+        # 1. Prova Lightning Deals
         if self.use_lightning:
             logger.info("Tento Lightning Deals...")
-            products = self.get_lightning_deals(limit=3)
-            if not products:
-                logger.info("Fallback a Browsing Deals...")
-                products = self.get_keepa_deals(limit=5)
-        else:
-            products = self.get_keepa_deals(limit=5)
+            products = self.get_lightning_deals(limit=5)
         
-        # Alterna per il prossimo giro
-        self.use_lightning = not self.use_lightning
-        
+        # 2. Se vuoto, prova Browsing Deals
         if not products:
-            logger.warning("Nessun prodotto trovato")
+            logger.info("Provo Browsing Deals...")
+            products = self.get_keepa_deals(limit=10)
+        
+        # 3. Se ancora vuoto, prova pagina successiva
+        if not products:
+            logger.info("Provo pagina successiva...")
+            products = self.get_keepa_deals(limit=10)
+        
+        # 4. Se ancora vuoto, prova con filtri allentati
+        if not products:
+            logger.info("Allento i filtri...")
+            # Salva pagina corrente
+            saved_page = self.current_page
+            self.current_page = 0
+            
+            query = {
+                "page": 0,
+                "domainId": 8,
+                "includeCategories": [],  # TUTTE le categorie
+                "excludeCategories": [],
+                "priceTypes": [0],
+                "deltaPercentRange": [5, 100],  # Sconto minimo 5%
+                "currentRange": [100, 200000],  # €1-€2000
+                "minRating": 20,  # 2 stelle
+                "isLowest90": False,
+                "isRangeEnabled": True,
+                "isFilterEnabled": True,
+                "filterErotic": True,
+                "singleVariation": True,
+                "mustHaveAmazonOffer": False,
+                "sortType": 4,
+                "dateRange": 1
+            }
+            
+            params = {
+                'key': self.keepa_api_key,
+                'selection': json.dumps(query)
+            }
+            
             try:
-                await self.bot.send_message(
-                    chat_id=self.channel_id,
-                    text="⚠️ Nessuna offerta trovata in questo momento. Riprovo piu tardi!"
-                )
+                response = requests.get('https://api.keepa.com/deal', params=params, timeout=30)
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'deals' in data and 'dr' in data['deals']:
+                        deals = data['deals']['dr']
+                        products = self.parse_deals(deals, 10)
             except:
                 pass
+            
+            # Ripristina pagina
+            self.current_page = saved_page
+        
+        # 5. ULTIMA RISORSA: se ancora vuoto, permetti ripubblicazione
+        if not products:
+            logger.warning("Nessun deal nuovo! Permetto ripubblicazione...")
+            self.published_asins.clear()
+            self.save_published_asins()
+            products = self.get_keepa_deals(limit=10)
+        
+        # 6. Se ANCORA vuoto (impossibile), skippa questo giro
+        if not products:
+            logger.error("IMPOSSIBILE trovare prodotti! Skippo questo giro...")
             return
+        
+        # Alterna Lightning per il prossimo giro
+        self.use_lightning = not self.use_lightning
         
         # Invia il primo prodotto
         product = products[0]
@@ -462,7 +529,7 @@ class TelegramKeepaBot:
         try:
             await self.bot.send_message(
                 chat_id=self.channel_id,
-                text="🤖 Bot avviato! Intervallo TEST: 10 minuti\n💰 Range: €3-1500 | 3 categorie"
+                text="🤖 Bot avviato! TEST 10min | Anti-ripetizione 7gg\n💰 Range: €3-1500 | 3 categorie"
             )
             logger.info("Canale Telegram OK")
         except Exception as e:
