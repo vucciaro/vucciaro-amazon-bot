@@ -12,10 +12,8 @@ from telegram.error import TelegramError
 import requests
 from dotenv import load_dotenv
 
-# Carica variabili dal file .env
 load_dotenv()
 
-# Configurazione logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -24,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 class TelegramKeepaBot:
     def __init__(self):
-        # Variabili d'ambiente
         self.telegram_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.channel_id = os.getenv('TELEGRAM_CHANNEL_ID')
         self.keepa_api_key = os.getenv('KEEPA_API_KEY')
@@ -32,34 +29,26 @@ class TelegramKeepaBot:
         self.amazon_domain = os.getenv('AMAZON_DOMAIN', 'it')
         self.timezone = pytz.timezone(os.getenv('TIMEZONE', 'Europe/Rome'))
         
-        # Inizializza bot Telegram
         self.bot = Bot(token=self.telegram_token)
         
-        # Categorie Amazon.it da usare insieme
         self.categories = [
             {'id': '77028031', 'name': 'Abbigliamento'},
             {'id': '4635183031', 'name': 'Scarpe e Borse'},
             {'id': '51571031', 'name': 'Bellezza'}
         ]
         
-        # Rotazione pagine per variare risultati
         self.current_page = 0
         
-        # Tracking ASIN pubblicati con timestamp
         self.storage_dir = Path('/data') if Path('/data').exists() else Path('.')
         self.published_file = self.storage_dir / 'published_asins.json'
         self.published_asins = self.load_published_asins()
         
-        # Tracking Lightning Deals
         self.use_lightning = True
-        
-        # Rate limit tracking
         self.last_429_time = None
         
         logger.info("Bot inizializzato - Versione OTTIMIZZATA")
 
     def load_published_asins(self):
-        """Carica ASIN già pubblicati con timestamp"""
         try:
             if self.published_file.exists():
                 with open(self.published_file, 'r') as f:
@@ -76,7 +65,6 @@ class TelegramKeepaBot:
         return {}
 
     def save_published_asins(self):
-        """Salva ASIN pubblicati con timestamp"""
         try:
             with open(self.published_file, 'w') as f:
                 json.dump(self.published_asins, f)
@@ -85,7 +73,6 @@ class TelegramKeepaBot:
             logger.error(f"Errore salvataggio ASIN: {e}")
 
     def can_republish(self, asin):
-        """Verifica se un ASIN può essere ripubblicato (dopo 7 giorni)"""
         if asin not in self.published_asins:
             return True
         
@@ -97,7 +84,6 @@ class TelegramKeepaBot:
             return True
 
     def check_rate_limit(self):
-        """Verifica se siamo in rate limit"""
         if self.last_429_time:
             elapsed = (datetime.now() - self.last_429_time).total_seconds()
             if elapsed < 120:
@@ -105,12 +91,10 @@ class TelegramKeepaBot:
         return False
 
     def handle_429(self):
-        """Gestisce errore 429"""
         self.last_429_time = datetime.now()
         logger.warning("Rate limit 429 - Attendo 2 minuti")
 
     def get_lightning_deals(self, limit=5):
-        """Ottieni Lightning Deals da Keepa"""
         if self.check_rate_limit():
             logger.warning("Rate limit attivo, skippo Lightning")
             return []
@@ -161,7 +145,6 @@ class TelegramKeepaBot:
             return []
 
     def get_keepa_deals(self, limit=10):
-        """Cerca prodotti scontati usando Keepa Browsing Deals API"""
         if self.check_rate_limit():
             logger.warning("Rate limit attivo, skippo Browsing")
             return []
@@ -221,7 +204,6 @@ class TelegramKeepaBot:
             return []
 
     def parse_deals(self, deals, limit):
-        """Processa i deals da Keepa"""
         products = []
         
         new_deals = [d for d in deals if self.can_republish(d.get('asin'))]
@@ -269,7 +251,6 @@ class TelegramKeepaBot:
         return products
 
     def get_product_details(self, asins):
-        """Ottieni dettagli prodotti da ASIN"""
         if self.check_rate_limit():
             logger.warning("Rate limit attivo, skippo Product Details")
             return []
@@ -334,7 +315,6 @@ class TelegramKeepaBot:
             return []
 
     def format_product_message(self, product):
-        """Formatta il messaggio per Telegram"""
         title = product['title'][:100] + "..." if len(product['title']) > 100 else product['title']
         title = title.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`')
         
@@ -377,7 +357,6 @@ class TelegramKeepaBot:
         return message
 
     async def send_product_to_channel(self, product):
-        """Invia prodotto al canale Telegram"""
         try:
             message = self.format_product_message(product)
             
@@ -405,16 +384,12 @@ class TelegramKeepaBot:
         """Pubblica deals sul canale - VERSIONE OTTIMIZZATA"""
         logger.info("Cercando nuove offerte...")
         
-        # Controlla rate limit globale
         if self.check_rate_limit():
             logger.warning("Rate limit attivo, skippo questo giro")
             return
         
         products = []
         
-        # CASCATA SEMPLIFICATA: max 3 chiamate API
-        
-        # 1. Prova Lightning o Browsing (alterno)
         if self.use_lightning:
             logger.info("Tento Lightning Deals...")
             products = self.get_lightning_deals(limit=5)
@@ -430,22 +405,18 @@ class TelegramKeepaBot:
                 logger.info("Fallback a Lightning Deals...")
                 products = self.get_lightning_deals(limit=5)
         
-        # 2. Se ancora vuoto, reset tracking e riprova UNA volta
         if not products:
             logger.warning("Reset tracking e riprovo...")
             self.published_asins.clear()
             self.save_published_asins()
             products = self.get_keepa_deals(limit=10)
         
-        # 3. Se ancora vuoto, skippa
         if not products:
             logger.error("Nessun prodotto disponibile, skippo questo giro")
             return
         
-        # Alterna per prossimo giro
         self.use_lightning = not self.use_lightning
         
-        # Invia prodotto
         product = products[0]
         success = await self.send_product_to_channel(product)
         
@@ -455,7 +426,6 @@ class TelegramKeepaBot:
             logger.error("Errore pubblicazione post")
 
     async def run_scheduler(self):
-        """Scheduler principale - LOOP INFINITO"""
         logger.info("Scheduler avviato! Bot attivo 24/7")
         
         last_post_time = None
@@ -469,7 +439,6 @@ class TelegramKeepaBot:
                 if now.minute == 0:
                     logger.info(f"Bot attivo - Ora: {current_time}")
                 
-                # Orario valido: 8:00 - 23:00
                 if 8 <= hour < 23:
                     if last_post_time is None:
                         await self.post_deals()
@@ -477,7 +446,6 @@ class TelegramKeepaBot:
                     else:
                         minutes_since_last = (now - last_post_time).total_seconds() / 60
                         
-                        # Intervallo 10 minuti
                         interval = 10
                         
                         if minutes_since_last >= interval:
@@ -485,7 +453,6 @@ class TelegramKeepaBot:
                             last_post_time = now
                             logger.info(f"Prossimo post tra {interval} minuti")
                 
-                # Pausa notturna
                 elif hour >= 23 or hour < 8:
                     if now.minute == 0:
                         logger.info("Pausa notturna - Risveglio alle 08:00")
@@ -498,7 +465,6 @@ class TelegramKeepaBot:
                 await asyncio.sleep(300)
 
     async def test_connection(self):
-        """Testa le connessioni"""
         logger.info("Testando connessioni...")
         
         try:
@@ -531,7 +497,6 @@ class TelegramKeepaBot:
         return True
 
 async def main():
-    """Funzione principale"""
     logger.info("Avvio Bot Telegram-Keepa OTTIMIZZATO...")
     
     required_vars = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHANNEL_ID', 'KEEPA_API_KEY']
