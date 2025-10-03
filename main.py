@@ -384,7 +384,7 @@ class TelegramKeepaBot:
         
         products = []
         
-        # STRATEGIA CASCATA: prova Lightning -> Browsing -> Allenta filtri
+        # STRATEGIA CASCATA: prova tutto fino a trovare qualcosa
         
         # 1. Prova Lightning Deals
         if self.use_lightning:
@@ -401,22 +401,21 @@ class TelegramKeepaBot:
             logger.info("Provo pagina successiva...")
             products = self.get_keepa_deals(limit=10)
         
-        # 4. Se ancora vuoto, prova con filtri allentati
+        # 4. Se ancora vuoto, TUTTE le categorie con filtri allentati
         if not products:
-            logger.info("Allento i filtri...")
-            # Salva pagina corrente
+            logger.info("Allento i filtri (tutte categorie)...")
             saved_page = self.current_page
             self.current_page = 0
             
             query = {
                 "page": 0,
                 "domainId": 8,
-                "includeCategories": [],  # TUTTE le categorie
+                "includeCategories": [],
                 "excludeCategories": [],
                 "priceTypes": [0],
-                "deltaPercentRange": [5, 100],  # Sconto minimo 5%
-                "currentRange": [100, 200000],  # €1-€2000
-                "minRating": 20,  # 2 stelle
+                "deltaPercentRange": [5, 100],
+                "currentRange": [100, 200000],
+                "minRating": 20,
                 "isLowest90": False,
                 "isRangeEnabled": True,
                 "isFilterEnabled": True,
@@ -438,23 +437,38 @@ class TelegramKeepaBot:
                     data = response.json()
                     if 'deals' in data and 'dr' in data['deals']:
                         deals = data['deals']['dr']
-                        products = self.parse_deals(deals, 10)
+                        products = self.parse_deals(deals, 20)
             except:
                 pass
             
-            # Ripristina pagina
             self.current_page = saved_page
         
-        # 5. ULTIMA RISORSA: se ancora vuoto, permetti ripubblicazione
+        # 5. FORZA ripubblicazione se ancora vuoto
         if not products:
-            logger.warning("Nessun deal nuovo! Permetto ripubblicazione...")
+            logger.warning("FORZO ripubblicazione prodotti vecchi...")
+            old_count = len(self.published_asins)
             self.published_asins.clear()
             self.save_published_asins()
+            logger.info(f"Rimossi {old_count} ASIN dal tracking")
+            
+            # Riprova con filtri normali
             products = self.get_keepa_deals(limit=10)
         
-        # 6. Se ANCORA vuoto (impossibile), skippa questo giro
+        # 6. Se ANCORA vuoto, prova Lightning senza filtri
         if not products:
-            logger.error("IMPOSSIBILE trovare prodotti! Skippo questo giro...")
+            logger.warning("Ultima risorsa: Lightning senza filtri...")
+            products = self.get_lightning_deals(limit=10)
+        
+        # 7. Se proprio impossibile (API Keepa down), manda messaggio tecnico
+        if not products:
+            logger.error("API Keepa non risponde! Mando alert...")
+            try:
+                await self.bot.send_message(
+                    chat_id=self.channel_id,
+                    text="🔧 Aggiornamento tecnico in corso... Torno tra pochi minuti con nuove offerte!"
+                )
+            except:
+                pass
             return
         
         # Alterna Lightning per il prossimo giro
@@ -493,7 +507,7 @@ class TelegramKeepaBot:
                     else:
                         minutes_since_last = (now - last_post_time).total_seconds() / 60
                         
-                        # Intervallo 10 minuti per TEST
+                        # Intervallo 10 minuti
                         interval = 10
                         
                         if minutes_since_last >= interval:
@@ -529,7 +543,7 @@ class TelegramKeepaBot:
         try:
             await self.bot.send_message(
                 chat_id=self.channel_id,
-                text="🤖 Bot avviato! TEST 10min | Anti-ripetizione 7gg\n💰 Range: €3-1500 | 3 categorie"
+                text="🤖 Bot avviato! Intervallo: 10min | Anti-ripetizione 7gg\n💰 Range: €3-1500 | 3 categorie"
             )
             logger.info("Canale Telegram OK")
         except Exception as e:
