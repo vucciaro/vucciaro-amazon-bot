@@ -35,17 +35,15 @@ class TelegramKeepaBot:
         # Inizializza bot Telegram
         self.bot = Bot(token=self.telegram_token)
         
-        # Categorie Amazon.it da ruotare
+        # Categorie Amazon.it da usare insieme
         self.categories = [
             {'id': '77028031', 'name': 'Abbigliamento'},
             {'id': '4635183031', 'name': 'Scarpe e Borse'},
-            {'id': '412609031', 'name': 'Elettronica'},
-            {'id': '460049031', 'name': 'Informatica'},
-            {'id': '50500031', 'name': 'Sport'},
-            {'id': '524015031', 'name': 'Casa e Cucina'},
             {'id': '51571031', 'name': 'Bellezza'}
         ]
-        self.current_category_index = 0
+        
+        # Rotazione pagine per variare risultati
+        self.current_page = 0
         
         # Tracking ASIN pubblicati
         self.storage_dir = Path('/data') if Path('/data').exists() else Path('.')
@@ -55,7 +53,7 @@ class TelegramKeepaBot:
         # Tracking Lightning Deals
         self.use_lightning = True
         
-        logger.info("✅ Bot inizializzato - Browsing Deals + 7 categorie + Lightning Deals")
+        logger.info("Bot inizializzato - Browsing Deals + Lightning Deals")
 
     def load_published_asins(self):
         """Carica ASIN già pubblicati"""
@@ -63,12 +61,12 @@ class TelegramKeepaBot:
             if self.published_file.exists():
                 with open(self.published_file, 'r') as f:
                     data = json.load(f)
-                    logger.info(f"📚 Caricati {len(data)} ASIN già pubblicati")
+                    logger.info(f"Caricati {len(data)} ASIN gia pubblicati")
                     return set(data)
         except Exception as e:
-            logger.error(f"❌ Errore caricamento ASIN: {e}")
+            logger.error(f"Errore caricamento ASIN: {e}")
         
-        logger.info("📚 Nessun ASIN precedente, inizio da zero")
+        logger.info("Nessun ASIN precedente, inizio da zero")
         return set()
 
     def save_published_asins(self):
@@ -76,15 +74,9 @@ class TelegramKeepaBot:
         try:
             with open(self.published_file, 'w') as f:
                 json.dump(list(self.published_asins), f)
-            logger.info(f"💾 Salvati {len(self.published_asins)} ASIN")
+            logger.info(f"Salvati {len(self.published_asins)} ASIN")
         except Exception as e:
-            logger.error(f"❌ Errore salvataggio ASIN: {e}")
-
-    def get_next_category(self):
-        """Ottieni prossima categoria in rotazione"""
-        category = self.categories[self.current_category_index]
-        self.current_category_index = (self.current_category_index + 1) % len(self.categories)
-        return category
+            logger.error(f"Errore salvataggio ASIN: {e}")
 
     def get_lightning_deals(self, limit=5):
         """Ottieni Lightning Deals da Keepa"""
@@ -95,7 +87,7 @@ class TelegramKeepaBot:
                 'state': 'AVAILABLE'
             }
             
-            logger.info("⚡ Chiamata Lightning Deals API...")
+            logger.info("Chiamata Lightning Deals API...")
             response = requests.get('https://api.keepa.com/lightningdeal', params=params, timeout=30)
             
             if response.status_code == 200:
@@ -103,13 +95,13 @@ class TelegramKeepaBot:
                 
                 if 'lightningDeals' in data and data['lightningDeals']:
                     deals = data['lightningDeals']
-                    logger.info(f"⚡ Trovati {len(deals)} Lightning Deals")
+                    logger.info(f"Trovati {len(deals)} Lightning Deals")
                     
                     # Filtra ASIN non pubblicati
                     new_deals = [d for d in deals if d.get('asin') not in self.published_asins]
                     
                     if not new_deals:
-                        logger.info("♻️ Tutti Lightning pubblicati! Reset...")
+                        logger.info("Tutti Lightning pubblicati! Reset...")
                         self.published_asins.clear()
                         self.save_published_asins()
                         new_deals = deals
@@ -124,39 +116,37 @@ class TelegramKeepaBot:
                         p['is_lightning'] = True
                     return products
                 
-                logger.warning("⚠️ Nessun Lightning Deal disponibile")
+                logger.warning("Nessun Lightning Deal disponibile")
                 return []
             else:
-                logger.error(f"❌ Errore Lightning API: {response.status_code}")
+                logger.error(f"Errore Lightning API: {response.status_code}")
                 return []
                 
         except Exception as e:
-            logger.error(f"❌ Errore Lightning Deals: {e}")
+            logger.error(f"Errore Lightning Deals: {e}")
             return []
 
     def get_keepa_deals(self, limit=10):
         """Cerca prodotti scontati usando Keepa Browsing Deals API"""
         try:
-            # Ottieni categoria corrente
-            category = self.get_next_category()
-            logger.info(f"🔍 Ricerca deals in: {category['name']}")
+            logger.info(f"Ricerca deals (pagina {self.current_page})")
             
-            # Query Browsing Deals API
+            # Query Browsing Deals API con 3 categorie
             query = {
-                "page": 0,
+                "page": self.current_page,
                 "domainId": 8,
-                "includeCategories": [int(category['id'])],
+                "includeCategories": [77028031, 4635183031, 51571031],
                 "excludeCategories": [],
                 "priceTypes": [0],
-                "deltaPercentRange": [15, 100],
-                "currentRange": [500, 100000],
-                "minRating": 40,
-                "isLowest90": True,
+                "deltaPercentRange": [10, 100],
+                "currentRange": [300, 150000],
+                "minRating": 30,
+                "isLowest90": False,
                 "isRangeEnabled": True,
                 "isFilterEnabled": True,
                 "filterErotic": True,
                 "singleVariation": True,
-                "mustHaveAmazonOffer": False,
+                "mustHaveAmazonOffer": True,
                 "sortType": 4,
                 "dateRange": 1
             }
@@ -173,20 +163,24 @@ class TelegramKeepaBot:
                 
                 if 'deals' in data and 'dr' in data['deals']:
                     deals = data['deals']['dr']
-                    logger.info(f"📦 Trovati {len(deals)} deals in {category['name']}")
-                    return self.parse_deals(deals, limit, category['name'])
+                    logger.info(f"Trovati {len(deals)} deals (pagina {self.current_page})")
+                    
+                    # Ruota pagina per la prossima volta (0-4)
+                    self.current_page = (self.current_page + 1) % 5
+                    
+                    return self.parse_deals(deals, limit)
                 else:
-                    logger.warning(f"⚠️ Nessun deal in {category['name']}")
+                    logger.warning("Nessun deal trovato")
                     return []
             else:
-                logger.error(f"❌ Errore Keepa API: {response.status_code}")
+                logger.error(f"Errore Keepa API: {response.status_code}")
                 return []
                         
         except Exception as e:
-            logger.error(f"❌ Errore get_keepa_deals: {e}")
+            logger.error(f"Errore get_keepa_deals: {e}")
             return []
 
-    def parse_deals(self, deals, limit, category_name):
+    def parse_deals(self, deals, limit):
         """Processa i deals da Keepa"""
         products = []
         
@@ -194,12 +188,12 @@ class TelegramKeepaBot:
         new_deals = [d for d in deals if d.get('asin') not in self.published_asins]
         
         if not new_deals:
-            logger.info(f"♻️ Tutti i deals di {category_name} già pubblicati! Reset...")
+            logger.info("Tutti i deals gia pubblicati! Reset...")
             self.published_asins.clear()
             self.save_published_asins()
             new_deals = deals
         
-        logger.info(f"🎲 {len(new_deals)} deals nuovi da {len(deals)} totali")
+        logger.info(f"{len(new_deals)} deals nuovi da {len(deals)} totali")
         
         for deal in new_deals[:limit]:
             try:
@@ -228,17 +222,16 @@ class TelegramKeepaBot:
                         'price': current_price,
                         'discount': delta,
                         'link': affiliate_link,
-                        'category': category_name,
                         'is_lightning': False
                     })
                     
             except Exception as e:
-                logger.error(f"❌ Errore parsing deal: {e}")
+                logger.error(f"Errore parsing deal: {e}")
                 continue
         
         # Randomizza per varietà
         random.shuffle(products)
-        logger.info(f"✅ Processati {len(products)} prodotti validi")
+        logger.info(f"Processati {len(products)} prodotti validi")
         return products
 
     def get_product_details(self, asins):
@@ -297,12 +290,15 @@ class TelegramKeepaBot:
             
             return []
         except Exception as e:
-            logger.error(f"❌ Errore get_product_details: {e}")
+            logger.error(f"Errore get_product_details: {e}")
             return []
 
     def format_product_message(self, product):
         """Formatta il messaggio per Telegram"""
         title = product['title'][:100] + "..." if len(product['title']) > 100 else product['title']
+        # Escapa caratteri Markdown
+        title = title.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`')
+        
         price = f"€{product['price']:.2f}"
         discount = int(product.get('discount', 0))
         is_lightning = product.get('is_lightning', False)
@@ -320,7 +316,7 @@ class TelegramKeepaBot:
             urgency_msgs = [
                 "⏰ OFFERTA LAMPO - Termina tra poche ore!",
                 "🚨 ATTENZIONE: Scorte limitate!",
-                "⚡ SOLO PER OGGI - Disponibilità limitata!",
+                "⚡ SOLO PER OGGI - Disponibilita limitata!",
                 "🔥 ULTIMI PEZZI - Affrettati!",
                 "⏳ TEMPO LIMITATO - Non perdere l'occasione!"
             ]
@@ -359,26 +355,26 @@ class TelegramKeepaBot:
             self.published_asins.add(product['asin'])
             self.save_published_asins()
             
-            logger.info(f"✅ Prodotto inviato: {product['asin']} | Tot pubblicati: {len(self.published_asins)}")
+            logger.info(f"Prodotto inviato: {product['asin']} | Tot pubblicati: {len(self.published_asins)}")
             return True
             
         except TelegramError as e:
-            logger.error(f"❌ Errore Telegram: {e}")
+            logger.error(f"Errore Telegram: {e}")
             return False
         except Exception as e:
-            logger.error(f"❌ Errore generico: {e}")
+            logger.error(f"Errore generico: {e}")
             return False
 
     async def post_deals(self):
         """Pubblica deals sul canale"""
-        logger.info("🔄 Cercando nuove offerte...")
+        logger.info("Cercando nuove offerte...")
         
         # Alterna tra Lightning Deals e Browsing Deals
         if self.use_lightning:
-            logger.info("⚡ Tento Lightning Deals...")
+            logger.info("Tento Lightning Deals...")
             products = self.get_lightning_deals(limit=3)
             if not products:
-                logger.info("📦 Fallback a Browsing Deals...")
+                logger.info("Fallback a Browsing Deals...")
                 products = self.get_keepa_deals(limit=5)
         else:
             products = self.get_keepa_deals(limit=5)
@@ -387,11 +383,11 @@ class TelegramKeepaBot:
         self.use_lightning = not self.use_lightning
         
         if not products:
-            logger.warning("⚠️ Nessun prodotto trovato")
+            logger.warning("Nessun prodotto trovato")
             try:
                 await self.bot.send_message(
                     chat_id=self.channel_id,
-                    text="⚠️ Nessuna offerta trovata in questo momento. Riprovo più tardi!"
+                    text="⚠️ Nessuna offerta trovata in questo momento. Riprovo piu tardi!"
                 )
             except:
                 pass
@@ -402,13 +398,13 @@ class TelegramKeepaBot:
         success = await self.send_product_to_channel(product)
         
         if success:
-            logger.info(f"✅ Post pubblicato con successo!")
+            logger.info("Post pubblicato con successo!")
         else:
-            logger.error(f"❌ Errore pubblicazione post")
+            logger.error("Errore pubblicazione post")
 
     async def run_scheduler(self):
         """Scheduler principale - LOOP INFINITO"""
-        logger.info("🚀 Scheduler avviato! Bot attivo 24/7")
+        logger.info("Scheduler avviato! Bot attivo 24/7")
         
         last_post_time = None
         
@@ -420,7 +416,7 @@ class TelegramKeepaBot:
                 
                 # Log ogni ora
                 if now.minute == 0:
-                    logger.info(f"✅ Bot attivo - Ora: {current_time}")
+                    logger.info(f"Bot attivo - Ora: {current_time}")
                 
                 # Orario valido: 8:00 - 23:00
                 if 8 <= hour < 23:
@@ -430,72 +426,72 @@ class TelegramKeepaBot:
                     else:
                         minutes_since_last = (now - last_post_time).total_seconds() / 60
                         
-                        # Intervallo dinamico
-                        interval = 30 if hour >= 20 else 15
+                        # Intervallo 10 minuti per TEST
+                        interval = 10
                         
                         if minutes_since_last >= interval:
                             await self.post_deals()
                             last_post_time = now
-                            logger.info(f"⏰ Prossimo post tra {interval} minuti")
+                            logger.info(f"Prossimo post tra {interval} minuti")
                 
                 # Pausa notturna
                 elif hour >= 23 or hour < 8:
                     if now.minute == 0:
-                        logger.info(f"😴 Pausa notturna - Risveglio alle 08:00")
+                        logger.info("Pausa notturna - Risveglio alle 08:00")
                         last_post_time = None
                 
                 await asyncio.sleep(60)
                 
             except Exception as e:
-                logger.error(f"❌ Errore nel loop: {e}")
+                logger.error(f"Errore nel loop: {e}")
                 await asyncio.sleep(300)
 
     async def test_connection(self):
         """Testa le connessioni"""
-        logger.info("🔄 Testando connessioni...")
+        logger.info("Testando connessioni...")
         
         # Test bot Telegram
         try:
             me = await self.bot.get_me()
-            logger.info(f"✅ Bot Telegram OK: @{me.username}")
+            logger.info(f"Bot Telegram OK: @{me.username}")
         except Exception as e:
-            logger.error(f"❌ Errore bot Telegram: {e}")
+            logger.error(f"Errore bot Telegram: {e}")
             return False
         
         # Test canale
         try:
             await self.bot.send_message(
                 chat_id=self.channel_id,
-                text="🤖 Bot avviato! Browsing Deals + Lightning + 7 categorie attive\n💰 Range: €5-1000"
+                text="🤖 Bot avviato! Intervallo TEST: 10 minuti\n💰 Range: €3-1500 | 3 categorie"
             )
-            logger.info("✅ Canale Telegram OK")
+            logger.info("Canale Telegram OK")
         except Exception as e:
-            logger.error(f"❌ Errore canale: {e}")
+            logger.error(f"Errore canale: {e}")
             return False
         
         # Test Keepa
         try:
             products = self.get_keepa_deals(limit=1)
             if products:
-                logger.info(f"✅ Keepa API OK - Trovati {len(products)} prodotti")
+                logger.info(f"Keepa API OK - Trovati {len(products)} prodotti")
             else:
-                logger.warning("⚠️ Keepa API: nessun prodotto trovato (normale se non ci sono offerte)")
+                logger.warning("Keepa API: nessun prodotto trovato (normale se non ci sono offerte)")
         except Exception as e:
-            logger.error(f"❌ Errore Keepa API: {e}")
+            logger.error(f"Errore Keepa API: {e}")
             return False
             
         return True
 
 async def main():
     """Funzione principale"""
-    logger.info("🚀 Avvio Bot Telegram-Keepa...")
+    logger.info("Avvio Bot Telegram-Keepa...")
     
     # Verifica variabili d'ambiente
     required_vars = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHANNEL_ID', 'KEEPA_API_KEY']
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     
     if missing_vars:
-        logger.error(f"❌ Variabili mancanti: {missing_vars}")
+        logger.error(f"Variabili mancanti: {missing_vars}")
         return
     
     # Inizializza bot
@@ -503,10 +499,10 @@ async def main():
     
     # Test connessioni
     if await bot.test_connection():
-        logger.info("🎉 Tutti i test superati! Avvio scheduler...")
+        logger.info("Tutti i test superati! Avvio scheduler...")
         await bot.run_scheduler()
     else:
-        logger.error("❌ Test falliti. Controlla la configurazione.")
+        logger.error("Test falliti. Controlla la configurazione.")
 
 if __name__ == "__main__":
     asyncio.run(main())
