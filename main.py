@@ -53,7 +53,10 @@ class TelegramKeepaBot:
         # Tracking Lightning Deals
         self.use_lightning = True
         
-        logger.info("Bot inizializzato - Browsing Deals + Lightning Deals")
+        # Rate limit tracking
+        self.last_429_time = None
+        
+        logger.info("Bot inizializzato - Versione OTTIMIZZATA")
 
     def load_published_asins(self):
         """Carica ASIN già pubblicati con timestamp"""
@@ -61,9 +64,8 @@ class TelegramKeepaBot:
             if self.published_file.exists():
                 with open(self.published_file, 'r') as f:
                     data = json.load(f)
-                    # Converti in dict se è ancora set (legacy)
                     if isinstance(data, list):
-                        logger.info(f"Conversione da lista a dict con timestamp")
+                        logger.info("Conversione da lista a dict con timestamp")
                         data = {asin: datetime.now().isoformat() for asin in data}
                     logger.info(f"Caricati {len(data)} ASIN gia pubblicati")
                     return data
@@ -92,11 +94,27 @@ class TelegramKeepaBot:
             age_days = (datetime.now() - last_posted).days
             return age_days >= 7
         except:
-            # Se errore parsing, permetti ripubblicazione
             return True
+
+    def check_rate_limit(self):
+        """Verifica se siamo in rate limit"""
+        if self.last_429_time:
+            elapsed = (datetime.now() - self.last_429_time).total_seconds()
+            if elapsed < 120:
+                return True
+        return False
+
+    def handle_429(self):
+        """Gestisce errore 429"""
+        self.last_429_time = datetime.now()
+        logger.warning("Rate limit 429 - Attendo 2 minuti")
 
     def get_lightning_deals(self, limit=5):
         """Ottieni Lightning Deals da Keepa"""
+        if self.check_rate_limit():
+            logger.warning("Rate limit attivo, skippo Lightning")
+            return []
+        
         try:
             params = {
                 'key': self.keepa_api_key,
@@ -107,6 +125,10 @@ class TelegramKeepaBot:
             logger.info("Chiamata Lightning Deals API...")
             response = requests.get('https://api.keepa.com/lightningdeal', params=params, timeout=30)
             
+            if response.status_code == 429:
+                self.handle_429()
+                return []
+            
             if response.status_code == 200:
                 data = response.json()
                 
@@ -114,19 +136,16 @@ class TelegramKeepaBot:
                     deals = data['lightningDeals']
                     logger.info(f"Trovati {len(deals)} Lightning Deals")
                     
-                    # Filtra ASIN che possono essere pubblicati
                     new_deals = [d for d in deals if self.can_republish(d.get('asin'))]
                     
                     if not new_deals:
                         logger.info("Tutti Lightning recenti! Uso tutti disponibili...")
                         new_deals = deals
                     
-                    # Prendi primi ASIN
                     asins = [d['asin'] for d in new_deals[:limit * 2]]
                     random.shuffle(asins)
                     
                     products = self.get_product_details(asins[:limit])
-                    # Marca come Lightning
                     for p in products:
                         p['is_lightning'] = True
                     return products
@@ -143,10 +162,13 @@ class TelegramKeepaBot:
 
     def get_keepa_deals(self, limit=10):
         """Cerca prodotti scontati usando Keepa Browsing Deals API"""
+        if self.check_rate_limit():
+            logger.warning("Rate limit attivo, skippo Browsing")
+            return []
+        
         try:
             logger.info(f"Ricerca deals (pagina {self.current_page})")
             
-            # Query Browsing Deals API con 3 categorie
             query = {
                 "page": self.current_page,
                 "domainId": 8,
@@ -173,6 +195,10 @@ class TelegramKeepaBot:
             
             response = requests.get('https://api.keepa.com/deal', params=params, timeout=30)
             
+            if response.status_code == 429:
+                self.handle_429()
+                return []
+            
             if response.status_code == 200:
                 data = response.json()
                 
@@ -180,7 +206,6 @@ class TelegramKeepaBot:
                     deals = data['deals']['dr']
                     logger.info(f"Trovati {len(deals)} deals (pagina {self.current_page})")
                     
-                    # Ruota pagina per la prossima volta (0-4)
                     self.current_page = (self.current_page + 1) % 5
                     
                     return self.parse_deals(deals, limit)
@@ -199,7 +224,6 @@ class TelegramKeepaBot:
         """Processa i deals da Keepa"""
         products = []
         
-        # Filtra deals che possono essere pubblicati
         new_deals = [d for d in deals if self.can_republish(d.get('asin'))]
         
         if not new_deals:
@@ -213,7 +237,6 @@ class TelegramKeepaBot:
                 asin = deal.get('asin', '')
                 title = deal.get('title', 'Prodotto Amazon')
                 
-                # FIX: current è un array [prezzo_centesimi, timestamp]
                 current = deal.get('current')
                 current_price = 0
                 
@@ -223,7 +246,6 @@ class TelegramKeepaBot:
                     elif isinstance(current, (int, float)):
                         current_price = current / 100
                 
-                # Sconto percentuale
                 delta = deal.get('deltaPercent', 0)
                 
                 if current_price > 0 and asin:
@@ -242,13 +264,16 @@ class TelegramKeepaBot:
                 logger.error(f"Errore parsing deal: {e}")
                 continue
         
-        # Randomizza per varietà
         random.shuffle(products)
         logger.info(f"Processati {len(products)} prodotti validi")
         return products
 
     def get_product_details(self, asins):
         """Ottieni dettagli prodotti da ASIN"""
+        if self.check_rate_limit():
+            logger.warning("Rate limit attivo, skippo Product Details")
+            return []
+        
         try:
             params = {
                 'key': self.keepa_api_key,
@@ -259,6 +284,10 @@ class TelegramKeepaBot:
             
             response = requests.get('https://api.keepa.com/product', params=params, timeout=30)
             
+            if response.status_code == 429:
+                self.handle_429()
+                return []
+            
             if response.status_code == 200:
                 data = response.json()
                 if 'products' in data:
@@ -268,7 +297,6 @@ class TelegramKeepaBot:
                             asin = product.get('asin', '')
                             title = product.get('title', 'Prodotto Amazon')
                             
-                            # Estrai prezzo
                             csv = product.get('csv', [])
                             current_price = 0
                             
@@ -278,7 +306,6 @@ class TelegramKeepaBot:
                                 elif len(csv) > 1 and csv[1] and len(csv[1]) > 1:
                                     current_price = csv[1][-1] / 100
                             
-                            # Calcola sconto
                             stats = product.get('stats', {})
                             avg30 = stats.get('avg30', [0, 0])
                             discount = 0
@@ -309,14 +336,12 @@ class TelegramKeepaBot:
     def format_product_message(self, product):
         """Formatta il messaggio per Telegram"""
         title = product['title'][:100] + "..." if len(product['title']) > 100 else product['title']
-        # Escapa caratteri Markdown
         title = title.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`')
         
         price = f"€{product['price']:.2f}"
         discount = int(product.get('discount', 0))
         is_lightning = product.get('is_lightning', False)
         
-        # Emoji in base allo sconto
         if discount >= 50:
             emoji = "🔥"
         elif discount >= 30:
@@ -324,7 +349,6 @@ class TelegramKeepaBot:
         else:
             emoji = "💎"
         
-        # Header diverso per Lightning Deals
         if is_lightning:
             urgency_msgs = [
                 "⏰ OFFERTA LAMPO - Termina tra poche ore!",
@@ -364,11 +388,10 @@ class TelegramKeepaBot:
                 disable_web_page_preview=False
             )
             
-            # Aggiungi ASIN ai pubblicati con timestamp
             self.published_asins[product['asin']] = datetime.now().isoformat()
             self.save_published_asins()
             
-            logger.info(f"Prodotto inviato: {product['asin']} | Tot pubblicati: {len(self.published_asins)}")
+            logger.info(f"Prodotto inviato: {product['asin']} | Tot: {len(self.published_asins)}")
             return True
             
         except TelegramError as e:
@@ -379,102 +402,50 @@ class TelegramKeepaBot:
             return False
 
     async def post_deals(self):
-        """Pubblica deals sul canale - GARANTISCE SEMPRE UN POST"""
+        """Pubblica deals sul canale - VERSIONE OTTIMIZZATA"""
         logger.info("Cercando nuove offerte...")
+        
+        # Controlla rate limit globale
+        if self.check_rate_limit():
+            logger.warning("Rate limit attivo, skippo questo giro")
+            return
         
         products = []
         
-        # STRATEGIA CASCATA: prova tutto fino a trovare qualcosa
+        # CASCATA SEMPLIFICATA: max 3 chiamate API
         
-        # 1. Prova Lightning Deals
+        # 1. Prova Lightning o Browsing (alterno)
         if self.use_lightning:
             logger.info("Tento Lightning Deals...")
             products = self.get_lightning_deals(limit=5)
-        
-        # 2. Se vuoto, prova Browsing Deals
-        if not products:
-            logger.info("Provo Browsing Deals...")
+            
+            if not products:
+                logger.info("Fallback a Browsing Deals...")
+                products = self.get_keepa_deals(limit=10)
+        else:
+            logger.info("Tento Browsing Deals...")
             products = self.get_keepa_deals(limit=10)
+            
+            if not products:
+                logger.info("Fallback a Lightning Deals...")
+                products = self.get_lightning_deals(limit=5)
         
-        # 3. Se ancora vuoto, prova pagina successiva
+        # 2. Se ancora vuoto, reset tracking e riprova UNA volta
         if not products:
-            logger.info("Provo pagina successiva...")
-            products = self.get_keepa_deals(limit=10)
-        
-        # 4. Se ancora vuoto, TUTTE le categorie con filtri allentati
-        if not products:
-            logger.info("Allento i filtri (tutte categorie)...")
-            saved_page = self.current_page
-            self.current_page = 0
-            
-            query = {
-                "page": 0,
-                "domainId": 8,
-                "includeCategories": [],
-                "excludeCategories": [],
-                "priceTypes": [0],
-                "deltaPercentRange": [5, 100],
-                "currentRange": [100, 200000],
-                "minRating": 20,
-                "isLowest90": False,
-                "isRangeEnabled": True,
-                "isFilterEnabled": True,
-                "filterErotic": True,
-                "singleVariation": True,
-                "mustHaveAmazonOffer": False,
-                "sortType": 4,
-                "dateRange": 1
-            }
-            
-            params = {
-                'key': self.keepa_api_key,
-                'selection': json.dumps(query)
-            }
-            
-            try:
-                response = requests.get('https://api.keepa.com/deal', params=params, timeout=30)
-                if response.status_code == 200:
-                    data = response.json()
-                    if 'deals' in data and 'dr' in data['deals']:
-                        deals = data['deals']['dr']
-                        products = self.parse_deals(deals, 20)
-            except:
-                pass
-            
-            self.current_page = saved_page
-        
-        # 5. FORZA ripubblicazione se ancora vuoto
-        if not products:
-            logger.warning("FORZO ripubblicazione prodotti vecchi...")
-            old_count = len(self.published_asins)
+            logger.warning("Reset tracking e riprovo...")
             self.published_asins.clear()
             self.save_published_asins()
-            logger.info(f"Rimossi {old_count} ASIN dal tracking")
-            
-            # Riprova con filtri normali
             products = self.get_keepa_deals(limit=10)
         
-        # 6. Se ANCORA vuoto, prova Lightning senza filtri
+        # 3. Se ancora vuoto, skippa
         if not products:
-            logger.warning("Ultima risorsa: Lightning senza filtri...")
-            products = self.get_lightning_deals(limit=10)
-        
-        # 7. Se proprio impossibile (API Keepa down), manda messaggio tecnico
-        if not products:
-            logger.error("API Keepa non risponde! Mando alert...")
-            try:
-                await self.bot.send_message(
-                    chat_id=self.channel_id,
-                    text="🔧 Aggiornamento tecnico in corso... Torno tra pochi minuti con nuove offerte!"
-                )
-            except:
-                pass
+            logger.error("Nessun prodotto disponibile, skippo questo giro")
             return
         
-        # Alterna Lightning per il prossimo giro
+        # Alterna per prossimo giro
         self.use_lightning = not self.use_lightning
         
-        # Invia il primo prodotto
+        # Invia prodotto
         product = products[0]
         success = await self.send_product_to_channel(product)
         
@@ -495,7 +466,6 @@ class TelegramKeepaBot:
                 current_time = now.strftime("%H:%M")
                 hour = now.hour
                 
-                # Log ogni ora
                 if now.minute == 0:
                     logger.info(f"Bot attivo - Ora: {current_time}")
                 
@@ -531,7 +501,6 @@ class TelegramKeepaBot:
         """Testa le connessioni"""
         logger.info("Testando connessioni...")
         
-        # Test bot Telegram
         try:
             me = await self.bot.get_me()
             logger.info(f"Bot Telegram OK: @{me.username}")
@@ -539,7 +508,6 @@ class TelegramKeepaBot:
             logger.error(f"Errore bot Telegram: {e}")
             return False
         
-        # Test canale
         try:
             await self.bot.send_message(
                 chat_id=self.channel_id,
@@ -550,13 +518,12 @@ class TelegramKeepaBot:
             logger.error(f"Errore canale: {e}")
             return False
         
-        # Test Keepa
         try:
             products = self.get_keepa_deals(limit=1)
             if products:
                 logger.info(f"Keepa API OK - Trovati {len(products)} prodotti")
             else:
-                logger.warning("Keepa API: nessun prodotto trovato (normale se non ci sono offerte)")
+                logger.warning("Keepa API: nessun prodotto trovato")
         except Exception as e:
             logger.error(f"Errore Keepa API: {e}")
             return False
@@ -565,9 +532,8 @@ class TelegramKeepaBot:
 
 async def main():
     """Funzione principale"""
-    logger.info("Avvio Bot Telegram-Keepa...")
+    logger.info("Avvio Bot Telegram-Keepa OTTIMIZZATO...")
     
-    # Verifica variabili d'ambiente
     required_vars = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHANNEL_ID', 'KEEPA_API_KEY']
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     
@@ -575,10 +541,8 @@ async def main():
         logger.error(f"Variabili mancanti: {missing_vars}")
         return
     
-    # Inizializza bot
     bot = TelegramKeepaBot()
     
-    # Test connessioni
     if await bot.test_connection():
         logger.info("Tutti i test superati! Avvio scheduler...")
         await bot.run_scheduler()
