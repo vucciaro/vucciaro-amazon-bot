@@ -1,6 +1,2 @@
-python-telegram-bot==20.7
-   aiohttp==3.9.1
-   pytz==2023.3
-   asyncio
-requests==2.32.4
-python-dotenv==1.0.1
+python-telegram-bot==13.15
+requests==2.31.0
