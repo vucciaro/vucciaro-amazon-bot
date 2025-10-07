@@ -81,3 +81,85 @@ def parse(p):
         }
     except:
         return None
+def fmt(p, ch):
+    e = '🖥️' if ch=='tech' else '👗'
+    de = '💎' if p['disc']>=50 else '🔥' if p['disc']>=30 else '💰'
+    b = []
+    if p['light']: b.append('⚡ LAMPO')
+    if p['rev']>1000: b.append('🏆 BEST')
+    bg = ' '.join(b)+' ' if b else ''
+    msg = f"{de} {bg}*-{p['disc']}%*\n\n{e} *{p['title'][:80]}*\n\n💶 ~~{p['orig']:.2f}€~~ → *{p['cur']:.2f}€*\n\n⭐️ {p['rat']:.1f}/5 ({p['rev']:,} rec)\n\n[➡️ VAI ALL'OFFERTA]({p['url']})"
+    if p['light']: msg += "\n\n⏰ _Offerta a tempo!_"
+    return msg
+
+def send(bot, cid, p, ch):
+    try:
+        msg = fmt(p, ch)
+        if p['img']:
+            bot.send_photo(cid, p['img'], caption=msg, parse_mode='Markdown')
+        else:
+            bot.send_message(cid, msg, parse_mode='Markdown')
+        return True
+    except Exception as e:
+        logger.error(f"Send fail: {e}")
+        return False
+
+def post(bot, cid, ch, cats, mind):
+    random.shuffle(cats)
+    for cat in cats:
+        prods = get_deals(cat, mind)
+        if not prods: continue
+        valid = [parse(p) for p in prods]
+        valid = [p for p in valid if p and not is_posted(p['asin'])]
+        if not valid: continue
+        valid.sort(key=lambda x: x['disc']*min(x['rev']/100, 10), reverse=True)
+        p = valid[0]
+        if send(bot, cid, p, ch):
+            mark(p['asin'], ch, p['title'], int(p['cur']*100))
+            logger.info(f"✅ {ch}: {p['title'][:40]}")
+            return True
+    logger.warning(f"❌ No products: {ch}")
+    return False
+
+def main():
+    logger.info("🚀 Starting...")
+    init_db()
+    bot = Bot(BOT_TOKEN)
+    try:
+        info = bot.get_me()
+        logger.info(f"✅ Bot: @{info.username}")
+    except Exception as e:
+        logger.error(f"❌ Bot error: {e}")
+        return
+    
+    last = None
+    logger.info(f"⏰ Every {INTERVAL}min, {START_H}:00-{END_H}:00")
+    
+    while True:
+        try:
+            h = datetime.now().hour
+            if not (START_H <= h < END_H):
+                time.sleep(300)
+                continue
+            
+            if last != 'tech':
+                logger.info("📱 Posting TECH...")
+                post(bot, TECH_CH, 'tech', TECH_CATS, MIN_DISC_T)
+                last = 'tech'
+            else:
+                logger.info("👗 Posting MODA...")
+                post(bot, MODA_CH, 'moda', MODA_CATS, MIN_DISC_M)
+                last = 'moda'
+            
+            logger.info(f"⏳ Wait {INTERVAL}min...")
+            time.sleep(INTERVAL * 60)
+            
+        except KeyboardInterrupt:
+            logger.info("🛑 Stopped")
+            break
+        except Exception as e:
+            logger.error(f"❌ Error: {e}")
+            time.sleep(60)
+
+if __name__ == '__main__':
+    main()
