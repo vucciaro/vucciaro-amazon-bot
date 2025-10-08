@@ -1,19 +1,19 @@
 """
-🎯 VUCCIARO UNIVERSE - BOT TELEGRAM OFFERTE AMAZON
+🌌 VUCCIARO UNIVERSE - BOT TELEGRAM OFFERTE AMAZON
 ═══════════════════════════════════════════════════════════
 
-✅ MODALITÀ CORRETTE:
-- Lightning Deals: /lightningdeal con domainId
-- Browsing Deals: POST /deal con query JSON
+✅ 2 CANALI:
+- @VucciaroTech (Tecnologia)
+- @VucciaroModa (Moda & Style)
 
-✅ ENDPOINT KEEPA ITALIA:
-- domainId: 8 (Amazon.it)
-- API Key: da variabile ambiente
+✅ ENDPOINT KEEPA CORRETTI:
+- Lightning Deals: GET /lightningdeal
+- Browsing Deals: POST /deal
 
 ✅ FUNZIONALITÀ:
-- Rotazione canali automatica
-- Deduplica prodotti (SQLite)
-- Post ogni 20 minuti (07:00-23:00)
+- Rotazione automatica tra i 2 canali
+- Pubblicazione ogni 20 minuti (07:00-23:00)
+- Deduplica prodotti con SQLite
 - Gestione errori e retry
 """
 
@@ -22,12 +22,11 @@ import sys
 import time
 import random
 import logging
-import hashlib
 import sqlite3
 from datetime import datetime, time as dt_time
 from typing import Dict, List, Optional
 import requests
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Bot
 from telegram.error import TelegramError
 
 # ═══════════════════════════════════════════════════════════════
@@ -47,52 +46,35 @@ KEEPA_API_KEY = os.getenv('KEEPA_API_KEY')
 AMAZON_TAG = os.getenv('AMAZON_TAG', 'vucciaro-21')
 
 # Validazione
-if not TELEGRAM_BOT_TOKEN or not KEEPA_API_KEY:
-    logger.error("❌ Variabili ambiente mancanti!")
+if not TELEGRAM_BOT_TOKEN:
+    logger.error("❌ TELEGRAM_BOT_TOKEN mancante!")
+    sys.exit(1)
+
+if not KEEPA_API_KEY:
+    logger.error("❌ KEEPA_API_KEY mancante!")
     sys.exit(1)
 
 # Costanti Keepa
 KEEPA_DOMAIN_IT = 8  # Amazon.it
-KEEPA_BASE_URL = "https://api.keepa.com"
+KEEPA_BASE_URL = "https://api.keepa.com"  # HTTPS non HTTP!
 
 # ═══════════════════════════════════════════════════════════════
-# 📺 CONFIGURAZIONE CANALI
+# 📺 CONFIGURAZIONE CANALI (SOLO 2)
 # ═══════════════════════════════════════════════════════════════
 
 CHANNELS = {
     'tech': {
         'id': '@VucciaroTech',
         'name': '🖥️ Tech & Gadget',
-        'categories': [560798, 412609011, 460139031, 3370831],  # Elettronica, Informatica, etc
+        'categories': [560798, 412609011, 460139031, 3370831],  # Elettronica, Informatica, Audio, Foto
         'emoji': ['⚡', '💻', '📱', '🎧', '⌚', '🔌'],
-        'min_discount': 25
-    },
-    'fashion': {
-        'id': '@StileAlive',
-        'name': '👗 Moda & Style',
-        'categories': [11052591, 1571275031, 1571274031],  # Abbigliamento, Scarpe, Accessori
-        'emoji': ['✨', '👗', '👠', '👜', '💄', '🕶️'],
-        'min_discount': 30
-    },
-    'home': {
-        'id': '@CasaVucciaro',
-        'name': '🏠 Casa & Giardino',
-        'categories': [524015031, 1571283031, 2454161031],  # Casa, Cucina, Giardino
-        'emoji': ['🏡', '🛋️', '🍽️', '🌿', '🛏️', '💡'],
-        'min_discount': 25
-    },
-    'baby': {
-        'id': '@BabyVucciaro',
-        'name': '🧸 Bimbi & Famiglia',
-        'categories': [1571286031, 3581355031],  # Prima infanzia, Giocattoli
-        'emoji': ['👶', '🧸', '🍼', '👪', '🎨', '📚'],
         'min_discount': 20
     },
-    'sport': {
-        'id': '@SportVucciaro',
-        'name': '💪 Sport & Outdoor',
-        'categories': [16291631, 3605611],  # Sport, Tempo libero
-        'emoji': ['💪', '🏃', '🚴', '⚽', '🏋️', '🏊'],
+    'moda': {
+        'id': '@VucciaroModa',
+        'name': '👗 Moda & Style',
+        'categories': [1571275031, 1571274031, 1571285031],  # Abbigliamento, Scarpe, Accessori
+        'emoji': ['✨', '👗', '👠', '👜', '💄', '🕶️'],
         'min_discount': 25
     }
 }
@@ -102,7 +84,7 @@ CHANNELS = {
 # ═══════════════════════════════════════════════════════════════
 
 def init_database():
-    """Inizializza database SQLite"""
+    """Inizializza database SQLite per deduplica"""
     conn = sqlite3.connect('vucciaro.db')
     c = conn.cursor()
     c.execute('''
@@ -135,17 +117,20 @@ def mark_product_published(asin: str, channel: str):
     conn.close()
 
 # ═══════════════════════════════════════════════════════════════
-# 🔌 KEEPA API
+# 🔌 KEEPA API CLIENT
 # ═══════════════════════════════════════════════════════════════
 
 class KeepaAPI:
-    """Wrapper Keepa API con modalità corrette"""
+    """Client Keepa API con endpoint corretti"""
     
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.base_url = KEEPA_BASE_URL
         self.session = requests.Session()
-        self.session.headers.update({'Content-Type': 'application/json'})
+        self.session.headers.update({
+            'Content-Type': 'application/json',
+            'User-Agent': 'VucciaroBot/1.0'
+        })
     
     def _call_api(self, endpoint: str, params: dict = None, method: str = 'GET') -> dict:
         """Chiamata API generica con retry"""
@@ -161,33 +146,36 @@ class KeepaAPI:
                 else:
                     response = self.session.get(url, params=params, timeout=30)
                 
+                # Rate limit
                 if response.status_code == 429:
-                    logger.warning("⏳ Rate limit, attendo 60s...")
+                    logger.warning("⏳ Rate limit Keepa, attendo 60s...")
                     time.sleep(60)
                     continue
                 
-                response.raise_for_status()
+                # Altri errori HTTP
+                if response.status_code != 200:
+                    logger.error(f"❌ Keepa API {response.status_code}: {response.text[:200]}")
+                    return {}
+                
                 return response.json()
                 
             except requests.exceptions.Timeout:
                 logger.warning(f"⏱️ Timeout tentativo {attempt+1}/3")
                 time.sleep(5)
             except requests.exceptions.RequestException as e:
-                logger.error(f"❌ Errore API: {e}")
+                logger.error(f"❌ Errore connessione: {e}")
                 time.sleep(5)
         
         return {}
     
     def get_lightning_deals(self) -> List[Dict]:
         """
-        🔥 LIGHTNING DEALS - Endpoint corretto
-        GET /lightningdeal
-        Token: 1 per deal o 500 per lista completa
+        ⚡ LIGHTNING DEALS
+        GET /lightningdeal?key=XXX&domainId=8
         """
         logger.info("⚡ Recupero Lightning Deals...")
         
         params = {
-            'key': self.api_key,
             'domainId': KEEPA_DOMAIN_IT
         }
         
@@ -197,30 +185,28 @@ class KeepaAPI:
             logger.warning("Nessun Lightning Deal disponibile")
             return []
         
-        deals = data['deals']
+        deals = data.get('deals', [])
         logger.info(f"⚡ Lightning Deals trovati: {len(deals)}")
         return deals
     
     def get_browsing_deals(self, categories: List[int], min_discount: int = 20) -> List[Dict]:
         """
-        🔍 BROWSING DEALS - Endpoint corretto
-        POST /deal
-        Token: 5 per query (max 150 risultati)
+        🔍 BROWSING DEALS
+        POST /deal con JSON query
         """
         logger.info(f"🔍 Recupero Browsing Deals per {len(categories)} categorie...")
         
         query = {
-            'key': self.api_key,
-            'page': 0,
             'domainId': KEEPA_DOMAIN_IT,
+            'page': 0,
             'excludeCategories': [],
             'includeCategories': categories,
             'priceTypes': [0],  # Amazon price
-            'deltaRange': [500, 100000],  # Prezzo 5-1000€
-            'deltaPercentRange': [min_discount, 100],  # Sconto minimo
-            'salesRankRange': [0, 50000],  # Rank vendite
-            'currentRange': [500, 100000],  # Prezzo corrente 5-1000€
-            'minRating': 35,  # Rating minimo 3.5
+            'deltaRange': [500, 100000],  # 5€ - 1000€
+            'deltaPercentRange': [min_discount, 100],
+            'salesRankRange': [0, 50000],
+            'currentRange': [500, 100000],
+            'minRating': 35,  # 3.5 stelle
             'isLowest': False,
             'isLowest90': False,
             'isLowestOffer': False,
@@ -231,65 +217,46 @@ class KeepaAPI:
             'filterErotic': True,
             'singleVariation': True,
             'hasReviews': True,
-            'isPrimeExclusive': False,
-            'mustHaveAmazonOffer': False,
-            'mustNotHaveAmazonOffer': False,
-            'sortType': 4,  # Ordina per popolarità
-            'dateRange': 1,  # Offerte ultime 24h
+            'sortType': 4,
+            'dateRange': 1,
             'warehouseConditions': [1, 2, 3, 4, 5]
         }
         
-        # IMPORTANTE: POST con JSON nel body
         data = self._call_api('deal', query, method='POST')
         
         if not data or 'dr' not in data:
             logger.warning("Nessuna offerta trovata")
             return []
         
-        deals = data['dr']
+        deals = data.get('dr', [])
         logger.info(f"🔍 Browsing Deals trovati: {len(deals)}")
         return deals
-    
-    def get_product_details(self, asin: str) -> Optional[Dict]:
-        """Recupera dettagli prodotto"""
-        params = {
-            'key': self.api_key,
-            'domain': KEEPA_DOMAIN_IT,
-            'asin': asin,
-            'stats': 1,
-            'offers': 20
-        }
-        
-        data = self._call_api('product', params, method='GET')
-        
-        if not data or 'products' not in data or not data['products']:
-            return None
-        
-        return data['products'][0]
 
 # ═══════════════════════════════════════════════════════════════
 # 📦 PRODUCT PROCESSOR
 # ═══════════════════════════════════════════════════════════════
 
 class ProductProcessor:
-    """Processa prodotti da API Keepa"""
+    """Processa e valida prodotti"""
     
     @staticmethod
     def extract_from_lightning_deal(deal: Dict) -> Optional[Dict]:
-        """Estrae info da Lightning Deal Object"""
+        """Estrae info da Lightning Deal"""
         try:
+            # Controllo stato
+            if deal.get('dealState') != 'AVAILABLE':
+                return None
+            
             return {
                 'asin': deal.get('asin'),
                 'title': deal.get('title', 'Prodotto in offerta'),
                 'image': deal.get('image'),
-                'current_price': deal.get('dealPrice', 0),
-                'original_price': deal.get('currentPrice', 0),
-                'rating': deal.get('rating', 0),
+                'current_price': deal.get('dealPrice', 0) / 100,  # Keepa usa centesimi
+                'original_price': deal.get('currentPrice', 0) / 100,
+                'rating': deal.get('rating', 0) / 10,
                 'reviews': deal.get('totalReviews', 0),
                 'discount': deal.get('percentOff', 0),
-                'is_lightning': True,
-                'end_time': deal.get('endTime'),
-                'percent_claimed': deal.get('percentClaimed', 0)
+                'is_lightning': True
             }
         except Exception as e:
             logger.error(f"❌ Errore parsing Lightning Deal: {e}")
@@ -297,9 +264,9 @@ class ProductProcessor:
     
     @staticmethod
     def extract_from_browsing_deal(deal: Dict) -> Optional[Dict]:
-        """Estrae info da Browsing Deal Object"""
+        """Estrae info da Browsing Deal"""
         try:
-            # Prezzi in formato Keepa (cent * 100)
+            # Prezzi da CSV array (formato Keepa)
             current = deal.get('current', [None])[0]
             avg90 = deal.get('avg90', [None])[0]
             
@@ -310,17 +277,20 @@ class ProductProcessor:
             original_price = avg90 / 100
             discount = round(((original_price - current_price) / original_price) * 100)
             
+            # Immagine
+            images = deal.get('imagesCSV', '')
+            image = images.split(',')[0] if images else None
+            
             return {
                 'asin': deal.get('asin'),
                 'title': deal.get('title', 'Prodotto in offerta'),
-                'image': deal.get('imagesCSV', '').split(',')[0] if deal.get('imagesCSV') else None,
+                'image': image,
                 'current_price': current_price,
                 'original_price': original_price,
-                'rating': deal.get('rating', 0) / 10 if deal.get('rating') else 0,
+                'rating': deal.get('rating', 0) / 10,
                 'reviews': deal.get('reviewCount', 0),
                 'discount': discount,
-                'is_lightning': False,
-                'sales_rank': deal.get('salesRank', 0)
+                'is_lightning': False
             }
         except Exception as e:
             logger.error(f"❌ Errore parsing Browsing Deal: {e}")
@@ -332,19 +302,19 @@ class ProductProcessor:
         if not product or not product.get('asin'):
             return False
         
-        # Verifica prezzi validi
+        # Prezzi validi
         if not product.get('current_price') or product['current_price'] <= 0:
             return False
         
-        # Verifica sconto minimo
+        # Sconto minimo
         if product.get('discount', 0) < min_discount:
             return False
         
-        # Verifica rating minimo (3.0)
-        if product.get('rating', 0) < 30:
+        # Rating minimo 3.0
+        if product.get('rating', 0) < 3.0:
             return False
         
-        # Verifica range prezzo (5€ - 1000€)
+        # Range prezzo 5€ - 1000€
         price = product['current_price']
         if price < 5 or price > 1000:
             return False
@@ -372,8 +342,8 @@ class TelegramPublisher:
         message += f"💰 **Prezzo:** ~~{product['original_price']:.2f}€~~ → **{product['current_price']:.2f}€**\n"
         
         if product.get('rating'):
-            stars = "⭐" * int(product['rating'] / 20)
-            message += f"{stars} {product['rating']/10:.1f}/5"
+            stars = "⭐" * int(product['rating'])
+            message += f"{stars} {product['rating']:.1f}/5"
             if product.get('reviews'):
                 message += f" ({product['reviews']} recensioni)\n"
             else:
@@ -381,8 +351,6 @@ class TelegramPublisher:
         
         if product.get('is_lightning'):
             message += f"\n⚡ **OFFERTA LAMPO** - Scade tra poco!\n"
-            if product.get('percent_claimed'):
-                message += f"🏃 {product['percent_claimed']}% già venduto\n"
         
         message += f"\n👉 [Acquista Ora](https://www.amazon.it/dp/{product['asin']}?tag={AMAZON_TAG})"
         
@@ -429,7 +397,7 @@ class TelegramPublisher:
 # ═══════════════════════════════════════════════════════════════
 
 class VucciaroBot:
-    """Bot principale con gestione automatica"""
+    """Bot principale"""
     
     def __init__(self):
         self.keepa = KeepaAPI(KEEPA_API_KEY)
@@ -440,7 +408,7 @@ class VucciaroBot:
         self.current_channel_index = 0
     
     def is_active_hours(self) -> bool:
-        """Verifica se è ora attiva (07:00-23:00)"""
+        """Verifica orario attivo (07:00-23:00)"""
         now = datetime.now().time()
         return dt_time(7, 0) <= now <= dt_time(23, 0)
     
@@ -461,7 +429,6 @@ class VucciaroBot:
         logger.info(f"🎯 Canale attivo: {channel['name']} ({channel['id']})")
         logger.info(f"{'='*60}")
         
-        # Strategia: Prima Lightning, poi Browsing
         product = None
         
         # 1. Prova Lightning Deals
@@ -473,7 +440,7 @@ class VucciaroBot:
                 logger.info("⚡ Trovato Lightning Deal valido!")
                 break
         
-        # 2. Se no Lightning, usa Browsing Deals
+        # 2. Se no Lightning, prova Browsing Deals
         if not product:
             logger.info("🔍 Nessun Lightning Deal, provo Browsing Deals...")
             browsing_deals = self.keepa.get_browsing_deals(
@@ -521,7 +488,7 @@ class VucciaroBot:
             time.sleep(1200)  # 20 minuti
 
 # ═══════════════════════════════════════════════════════════════
-# 🎬 MAIN
+# 🎬 MAIN ENTRY POINT
 # ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
