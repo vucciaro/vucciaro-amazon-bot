@@ -67,10 +67,10 @@ POST_INTERVAL_MINUTES = int(os.getenv('POST_INTERVAL_MINUTES', '20'))
 START_HOUR = int(os.getenv('START_HOUR', '7'))
 END_HOUR = int(os.getenv('END_HOUR', '23'))
 
-# Filtri prodotti
-MIN_DISCOUNT = int(os.getenv('MIN_DISCOUNT', '20'))
-MIN_RATING = float(os.getenv('MIN_RATING', '4.0'))
-MIN_REVIEWS = int(os.getenv('MIN_REVIEWS', '20'))
+# Filtri prodotti (abbassati per test iniziali)
+MIN_DISCOUNT = int(os.getenv('MIN_DISCOUNT', '15'))
+MIN_RATING = float(os.getenv('MIN_RATING', '3.5'))
+MIN_REVIEWS = int(os.getenv('MIN_REVIEWS', '10'))
 MIN_PRICE = int(os.getenv('MIN_PRICE', '500'))  # 5€ in centesimi
 MAX_PRICE = int(os.getenv('MAX_PRICE', '40000'))  # 400€ in centesimi
 
@@ -238,6 +238,7 @@ class KeepaClient:
     def _parse_deals(self, raw_deals: List[Dict]) -> List[Dict]:
         """Parse e normalizza deals da Keepa"""
         parsed = []
+        skipped_reasons = {'no_price': 0, 'no_discount': 0, 'low_rating': 0, 'low_reviews': 0}
         
         for deal in raw_deals:
             try:
@@ -246,18 +247,25 @@ class KeepaClient:
                 list_price = deal.get('current', [None, None])[1]
                 
                 if not current_price or not list_price or list_price <= current_price:
+                    skipped_reasons['no_price'] += 1
                     continue
                 
                 discount_percent = int(((list_price - current_price) / list_price) * 100)
                 
                 if discount_percent < MIN_DISCOUNT:
+                    skipped_reasons['no_discount'] += 1
                     continue
                 
                 # Converti rating (Amazon: 45 = 4.5 stelle)
                 rating = deal.get('rating', 0) / 10.0 if deal.get('rating') else 0
                 review_count = deal.get('reviewCount', 0)
                 
-                if rating < MIN_RATING or review_count < MIN_REVIEWS:
+                if rating < MIN_RATING:
+                    skipped_reasons['low_rating'] += 1
+                    continue
+                    
+                if review_count < MIN_REVIEWS:
+                    skipped_reasons['low_reviews'] += 1
                     continue
                 
                 parsed.append({
@@ -275,6 +283,13 @@ class KeepaClient:
             except Exception as e:
                 logger.warning(f"⚠️ Errore parsing deal: {e}")
                 continue
+        
+        # Log statistiche filtraggio
+        logger.info(f"📊 Parsing completato: {len(parsed)} prodotti OK, scartati: {sum(skipped_reasons.values())}")
+        logger.info(f"   - Nessun prezzo: {skipped_reasons['no_price']}")
+        logger.info(f"   - Sconto basso: {skipped_reasons['no_discount']}")
+        logger.info(f"   - Rating basso: {skipped_reasons['low_rating']}")
+        logger.info(f"   - Poche recensioni: {skipped_reasons['low_reviews']}")
         
         return parsed
 
@@ -356,6 +371,27 @@ class TelegramPublisher:
         except TelegramError as e:
             logger.error(f"❌ Errore pubblicazione Telegram: {e}")
             return False
+    
+    def send_startup_message(self):
+        """Invia messaggio di test all'avvio su entrambi i canali"""
+        logger.info("📨 Invio messaggi di startup...")
+        
+        for channel_type, channel_id in CHANNELS.items():
+            try:
+                emoji = self.EMOJI_MAP.get(channel_type, '🤖')
+                message = f"{emoji} <b>BOT VUCCIARO ATTIVO</b>\n\n"
+                message += f"✅ Sistema avviato con successo!\n"
+                message += f"⏰ Pubblicazioni ogni {POST_INTERVAL_MINUTES} minuti\n"
+                message += f"🕐 Orario: {START_HOUR}:00 - {END_HOUR}:00"
+                
+                self.bot.send_message(
+                    chat_id=channel_id,
+                    text=message,
+                    parse_mode=ParseMode.HTML
+                )
+                logger.info(f"✅ Messaggio startup inviato su {channel_type}")
+            except Exception as e:
+                logger.error(f"❌ Errore invio startup su {channel_type}: {e}")
 
 # ═══════════════════════════════════════════════════════════════
 # 🎯 SISTEMA PRINCIPALE - ROTAZIONE INTELLIGENTE
@@ -485,6 +521,10 @@ def main():
     
     # Inizializza sistema
     system = VucciaroSystem()
+    
+    # Invia messaggio di startup sui canali
+    logger.info("📨 Invio messaggi di test sui canali...")
+    system.telegram.send_startup_message()
     
     # Scheduler
     schedule.every(POST_INTERVAL_MINUTES).minutes.do(system.publish_next_deal)
