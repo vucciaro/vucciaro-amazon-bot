@@ -1,459 +1,416 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-╔════════════════════════════════════════════════════════════════╗
-║       VUCCIARO UNIVERSE - Sistema Telegram Offerte Amazon      ║
-║          Bot Automatizzato 24/7 - Mix API Ottimizzato          ║
-╚════════════════════════════════════════════════════════════════╝
+🎯 VUCCIARO UNIVERSE - BOT TELEGRAM OFFERTE AMAZON
+═══════════════════════════════════════════════════════════
 
-Strategia API Keepa Ultra-Ottimizzata:
-- 70% Lightning Deals API (1 token) - Offerte lampo real-time
-- 30% Browsing Deals API (5 token) - Varietà categorie
-- Copy con urgenza, scarcity e social proof
-- Visual impattante con foto sempre in primo piano
+✅ MODALITÀ CORRETTE:
+- Lightning Deals: /lightningdeal con domainId
+- Browsing Deals: POST /deal con query JSON
+
+✅ ENDPOINT KEEPA ITALIA:
+- domainId: 8 (Amazon.it)
+- API Key: da variabile ambiente
+
+✅ FUNZIONALITÀ:
+- Rotazione canali automatica
+- Deduplica prodotti (SQLite)
+- Post ogni 20 minuti (07:00-23:00)
+- Gestione errori e retry
 """
 
 import os
 import sys
 import time
-import json
 import random
 import logging
+import hashlib
 import sqlite3
+from datetime import datetime, time as dt_time
+from typing import Dict, List, Optional
 import requests
-from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Any
-
-# Telegram
-try:
-    from telegram import Bot, ParseMode
-    from telegram.error import TelegramError
-except ImportError:
-    print("❌ Installa python-telegram-bot: pip install python-telegram-bot==13.15")
-    sys.exit(1)
-
-# Scheduling
-try:
-    import schedule
-except ImportError:
-    print("❌ Installa schedule: pip install schedule")
-    sys.exit(1)
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import TelegramError
 
 # ═══════════════════════════════════════════════════════════════
-# 📋 CONFIGURAZIONE SISTEMA
+# 🔧 CONFIGURAZIONE
 # ═══════════════════════════════════════════════════════════════
 
+# Logging
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=getattr(logging, os.getenv('LOG_LEVEL', 'INFO'))
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Environment Variables
+# Variabili ambiente
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 KEEPA_API_KEY = os.getenv('KEEPA_API_KEY')
 AMAZON_TAG = os.getenv('AMAZON_TAG', 'vucciaro-21')
 
-# Canali Telegram
+# Validazione
+if not TELEGRAM_BOT_TOKEN or not KEEPA_API_KEY:
+    logger.error("❌ Variabili ambiente mancanti!")
+    sys.exit(1)
+
+# Costanti Keepa
+KEEPA_DOMAIN_IT = 8  # Amazon.it
+KEEPA_BASE_URL = "https://api.keepa.com"
+
+# ═══════════════════════════════════════════════════════════════
+# 📺 CONFIGURAZIONE CANALI
+# ═══════════════════════════════════════════════════════════════
+
 CHANNELS = {
-    'tech': os.getenv('TECH_CHANNEL_ID', '-1002956324651'),
-    'moda': os.getenv('MODA_CHANNEL_ID', '-1003108272082')
-}
-
-# Configurazione pubblicazione
-POST_INTERVAL_MINUTES = int(os.getenv('POST_INTERVAL_MINUTES', '20'))
-START_HOUR = int(os.getenv('START_HOUR', '7'))
-END_HOUR = int(os.getenv('END_HOUR', '23'))
-
-# Mix API (70% Lightning, 30% Browsing)
-LIGHTNING_PERCENTAGE = int(os.getenv('LIGHTNING_PERCENTAGE', '70'))
-
-# Filtri prodotti (abbassati per test iniziali)
-MIN_DISCOUNT = int(os.getenv('MIN_DISCOUNT', '15'))
-MIN_RATING = float(os.getenv('MIN_RATING', '3.5'))
-MIN_REVIEWS = int(os.getenv('MIN_REVIEWS', '10'))
-MIN_PRICE = int(os.getenv('MIN_PRICE', '500'))  # 5€
-MAX_PRICE = int(os.getenv('MAX_PRICE', '40000'))  # 400€
-
-# Categorie Keepa
-CATEGORY_MAP = {
-    'tech': [412609031, 1497228031, 473257031, 425916031],
-    'moda': [5515768031, 5515769031, 26039478031]
+    'tech': {
+        'id': '@VucciaroTech',
+        'name': '🖥️ Tech & Gadget',
+        'categories': [560798, 412609011, 460139031, 3370831],  # Elettronica, Informatica, etc
+        'emoji': ['⚡', '💻', '📱', '🎧', '⌚', '🔌'],
+        'min_discount': 25
+    },
+    'fashion': {
+        'id': '@StileAlive',
+        'name': '👗 Moda & Style',
+        'categories': [11052591, 1571275031, 1571274031],  # Abbigliamento, Scarpe, Accessori
+        'emoji': ['✨', '👗', '👠', '👜', '💄', '🕶️'],
+        'min_discount': 30
+    },
+    'home': {
+        'id': '@CasaVucciaro',
+        'name': '🏠 Casa & Giardino',
+        'categories': [524015031, 1571283031, 2454161031],  # Casa, Cucina, Giardino
+        'emoji': ['🏡', '🛋️', '🍽️', '🌿', '🛏️', '💡'],
+        'min_discount': 25
+    },
+    'baby': {
+        'id': '@BabyVucciaro',
+        'name': '🧸 Bimbi & Famiglia',
+        'categories': [1571286031, 3581355031],  # Prima infanzia, Giocattoli
+        'emoji': ['👶', '🧸', '🍼', '👪', '🎨', '📚'],
+        'min_discount': 20
+    },
+    'sport': {
+        'id': '@SportVucciaro',
+        'name': '💪 Sport & Outdoor',
+        'categories': [16291631, 3605611],  # Sport, Tempo libero
+        'emoji': ['💪', '🏃', '🚴', '⚽', '🏋️', '🏊'],
+        'min_discount': 25
+    }
 }
 
 # ═══════════════════════════════════════════════════════════════
-# 💾 DATABASE
+# 🗄️ DATABASE
 # ═══════════════════════════════════════════════════════════════
 
 def init_database():
+    """Inizializza database SQLite"""
     conn = sqlite3.connect('vucciaro.db')
     c = conn.cursor()
-    
     c.execute('''
-        CREATE TABLE IF NOT EXISTS posted_products (
+        CREATE TABLE IF NOT EXISTS published_products (
             asin TEXT PRIMARY KEY,
-            channel TEXT NOT NULL,
-            posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            title TEXT,
-            price INTEGER,
-            discount INTEGER
+            channel TEXT,
+            published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS keepa_cache (
-            cache_key TEXT PRIMARY KEY,
-            data TEXT NOT NULL,
-            cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    c.execute('CREATE INDEX IF NOT EXISTS idx_posted_at ON posted_products(posted_at)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_cached_at ON keepa_cache(cached_at)')
-    
     conn.commit()
     conn.close()
     logger.info("✅ Database inizializzato")
 
-def is_product_posted(asin: str, hours: int = 48) -> bool:
+def is_product_published(asin: str) -> bool:
+    """Verifica se prodotto già pubblicato"""
     conn = sqlite3.connect('vucciaro.db')
     c = conn.cursor()
-    cutoff = datetime.now() - timedelta(hours=hours)
-    
-    c.execute(
-        'SELECT 1 FROM posted_products WHERE asin = ? AND posted_at > ?',
-        (asin, cutoff)
-    )
-    exists = c.fetchone() is not None
+    c.execute('SELECT asin FROM published_products WHERE asin = ?', (asin,))
+    result = c.fetchone()
     conn.close()
-    return exists
+    return result is not None
 
-def mark_as_posted(asin: str, channel: str, title: str, price: int, discount: int):
+def mark_product_published(asin: str, channel: str):
+    """Marca prodotto come pubblicato"""
     conn = sqlite3.connect('vucciaro.db')
     c = conn.cursor()
-    c.execute(
-        'INSERT OR REPLACE INTO posted_products (asin, channel, title, price, discount) VALUES (?, ?, ?, ?, ?)',
-        (asin, channel, title, price, discount)
-    )
-    conn.commit()
-    conn.close()
-
-def get_cached_data(cache_key: str, max_age_hours: int = 1) -> Optional[List[Dict]]:
-    conn = sqlite3.connect('vucciaro.db')
-    c = conn.cursor()
-    cutoff = datetime.now() - timedelta(hours=max_age_hours)
-    
-    c.execute(
-        'SELECT data FROM keepa_cache WHERE cache_key = ? AND cached_at > ?',
-        (cache_key, cutoff)
-    )
-    row = c.fetchone()
-    conn.close()
-    
-    if row:
-        logger.info(f"✅ Cache hit: {cache_key}")
-        return json.loads(row[0])
-    return None
-
-def cache_data(cache_key: str, data: List[Dict]):
-    conn = sqlite3.connect('vucciaro.db')
-    c = conn.cursor()
-    c.execute(
-        'INSERT OR REPLACE INTO keepa_cache (cache_key, data, cached_at) VALUES (?, ?, ?)',
-        (cache_key, json.dumps(data), datetime.now())
-    )
+    c.execute('INSERT OR IGNORE INTO published_products (asin, channel) VALUES (?, ?)', 
+              (asin, channel))
     conn.commit()
     conn.close()
 
 # ═══════════════════════════════════════════════════════════════
-# 🔌 KEEPA API CLIENT - MIX OTTIMIZZATO
+# 🔌 KEEPA API
 # ═══════════════════════════════════════════════════════════════
 
-class KeepaClient:
-    """Client con mix Lightning Deals (70%) + Browsing Deals (30%)"""
-    
-    BASE_URL = "https://api.keepa.com"
-    DOMAIN_IT = 8
+class KeepaAPI:
+    """Wrapper Keepa API con modalità corrette"""
     
     def __init__(self, api_key: str):
         self.api_key = api_key
+        self.base_url = KEEPA_BASE_URL
         self.session = requests.Session()
-        self.token_count = 0
-        self.call_counter = 0  # Per decidere quale API usare
+        self.session.headers.update({'Content-Type': 'application/json'})
     
-    def fetch_lightning_deals(self) -> List[Dict]:
-        """Lightning Deals - 1 token, offerte lampo real-time"""
+    def _call_api(self, endpoint: str, params: dict = None, method: str = 'GET') -> dict:
+        """Chiamata API generica con retry"""
+        params = params or {}
+        params['key'] = self.api_key
         
-        url = f"{self.BASE_URL}/lightningdeal"
+        url = f"{self.base_url}/{endpoint}"
+        
+        for attempt in range(3):
+            try:
+                if method == 'POST':
+                    response = self.session.post(url, json=params, timeout=30)
+                else:
+                    response = self.session.get(url, params=params, timeout=30)
+                
+                if response.status_code == 429:
+                    logger.warning("⏳ Rate limit, attendo 60s...")
+                    time.sleep(60)
+                    continue
+                
+                response.raise_for_status()
+                return response.json()
+                
+            except requests.exceptions.Timeout:
+                logger.warning(f"⏱️ Timeout tentativo {attempt+1}/3")
+                time.sleep(5)
+            except requests.exceptions.RequestException as e:
+                logger.error(f"❌ Errore API: {e}")
+                time.sleep(5)
+        
+        return {}
+    
+    def get_lightning_deals(self) -> List[Dict]:
+        """
+        🔥 LIGHTNING DEALS - Endpoint corretto
+        GET /lightningdeal
+        Token: 1 per deal o 500 per lista completa
+        """
+        logger.info("⚡ Recupero Lightning Deals...")
+        
         params = {
-            "key": self.api_key,
-            "domainId": self.DOMAIN_IT
+            'key': self.api_key,
+            'domainId': KEEPA_DOMAIN_IT
         }
         
-        try:
-            logger.info("⚡ Keepa API: Lightning Deals (1 token)")
-            response = self.session.get(url, params=params, timeout=30)
-            response.raise_for_status()
-            
-            data = response.json()
-            self.token_count += data.get('tokensConsumed', 1)
-            
-            deals = data.get('lightningDeals', [])
-            logger.info(f"✅ Ricevuti {len(deals)} lightning deals (Token usati: {self.token_count})")
-            
-            return self._parse_lightning_deals(deals)
-            
-        except Exception as e:
-            logger.error(f"❌ Errore Lightning Deals API: {e}")
+        data = self._call_api('lightningdeal', params, method='GET')
+        
+        if not data or 'deals' not in data:
+            logger.warning("Nessun Lightning Deal disponibile")
             return []
+        
+        deals = data['deals']
+        logger.info(f"⚡ Lightning Deals trovati: {len(deals)}")
+        return deals
     
-    def fetch_browsing_deals(self, category_ids: List[int]) -> List[Dict]:
-        """Browsing Deals - 5 token, varietà categorie"""
+    def get_browsing_deals(self, categories: List[int], min_discount: int = 20) -> List[Dict]:
+        """
+        🔍 BROWSING DEALS - Endpoint corretto
+        POST /deal
+        Token: 5 per query (max 150 risultati)
+        """
+        logger.info(f"🔍 Recupero Browsing Deals per {len(categories)} categorie...")
         
         query = {
-            "page": 0,
-            "domainId": self.DOMAIN_IT,
-            "includeCategories": category_ids,
-            "excludeCategories": [],
-            "priceTypes": [0],
-            "deltaPercentRange": [MIN_DISCOUNT, 100],
-            "currentRange": [MIN_PRICE, MAX_PRICE],
-            "minRating": int(MIN_RATING * 10),
-            "hasReviews": True,
-            "isLowest90": True,
-            "isOutOfStock": False,
-            "filterErotic": True,
-            "singleVariation": True,
-            "sortType": 4,
-            "dateRange": 1
+            'key': self.api_key,
+            'page': 0,
+            'domainId': KEEPA_DOMAIN_IT,
+            'excludeCategories': [],
+            'includeCategories': categories,
+            'priceTypes': [0],  # Amazon price
+            'deltaRange': [500, 100000],  # Prezzo 5-1000€
+            'deltaPercentRange': [min_discount, 100],  # Sconto minimo
+            'salesRankRange': [0, 50000],  # Rank vendite
+            'currentRange': [500, 100000],  # Prezzo corrente 5-1000€
+            'minRating': 35,  # Rating minimo 3.5
+            'isLowest': False,
+            'isLowest90': False,
+            'isLowestOffer': False,
+            'isOutOfStock': False,
+            'titleSearch': None,
+            'isRangeEnabled': True,
+            'isFilterEnabled': False,
+            'filterErotic': True,
+            'singleVariation': True,
+            'hasReviews': True,
+            'isPrimeExclusive': False,
+            'mustHaveAmazonOffer': False,
+            'mustNotHaveAmazonOffer': False,
+            'sortType': 4,  # Ordina per popolarità
+            'dateRange': 1,  # Offerte ultime 24h
+            'warehouseConditions': [1, 2, 3, 4, 5]
         }
         
-        url = f"{self.BASE_URL}/deal"
-        params = {
-            "key": self.api_key,
-            "selection": json.dumps(query)
-        }
+        # IMPORTANTE: POST con JSON nel body
+        data = self._call_api('deal', query, method='POST')
         
-        try:
-            logger.info(f"🔍 Keepa API: Browsing Deals (5 token) - Categorie: {category_ids[:2]}")
-            response = self.session.get(url, params=params, timeout=30)
-            response.raise_for_status()
-            
-            data = response.json()
-            self.token_count += data.get('tokensConsumed', 5)
-            
-            deals = data.get('deals', {}).get('dr', [])
-            logger.info(f"✅ Ricevuti {len(deals)} browsing deals (Token usati: {self.token_count})")
-            
-            return self._parse_browsing_deals(deals)
-            
-        except Exception as e:
-            logger.error(f"❌ Errore Browsing Deals API: {e}")
+        if not data or 'dr' not in data:
+            logger.warning("Nessuna offerta trovata")
             return []
+        
+        deals = data['dr']
+        logger.info(f"🔍 Browsing Deals trovati: {len(deals)}")
+        return deals
     
-    def _parse_lightning_deals(self, raw_deals: List[Dict]) -> List[Dict]:
-        """Parse Lightning Deals con info urgenza"""
-        parsed = []
-        now = int(time.time() * 1000)  # Milliseconds
+    def get_product_details(self, asin: str) -> Optional[Dict]:
+        """Recupera dettagli prodotto"""
+        params = {
+            'key': self.api_key,
+            'domain': KEEPA_DOMAIN_IT,
+            'asin': asin,
+            'stats': 1,
+            'offers': 20
+        }
         
-        for deal in raw_deals:
-            try:
-                # Verifica deal attivo
-                deal_state = deal.get('dealState', '')
-                if deal_state not in ['AVAILABLE', 'WAITLIST']:
-                    continue
-                
-                deal_price = deal.get('dealPrice', 0)
-                current_price = deal.get('currentPrice', 0)
-                
-                if not deal_price or not current_price:
-                    continue
-                
-                # Calcola sconto
-                percent_off = deal.get('percentOff', 0)
-                if percent_off < MIN_DISCOUNT:
-                    continue
-                
-                # Rating e recensioni
-                rating = deal.get('rating', 0) / 10.0 if deal.get('rating') else 0
-                review_count = deal.get('totalReviews', 0)
-                
-                if rating < MIN_RATING or review_count < MIN_REVIEWS:
-                    continue
-                
-                # Calcola urgenza
-                end_time = deal.get('endTime', 0)
-                hours_left = (end_time - now) / (1000 * 60 * 60) if end_time > now else 0
-                percent_claimed = deal.get('percentClaimed', 0)
-                
-                parsed.append({
-                    'asin': deal.get('asin'),
-                    'title': deal.get('title', '').strip(),
-                    'current_price': deal_price / 100,
-                    'list_price': current_price / 100,
-                    'discount_percent': int(percent_off),
-                    'rating': round(rating, 1),
-                    'review_count': review_count,
-                    'image_url': deal.get('image'),
-                    'is_lightning': True,
-                    'hours_left': round(hours_left, 1),
-                    'percent_claimed': percent_claimed,
-                    'is_prime': deal.get('isPrimeEligible', False)
-                })
-                
-            except Exception as e:
-                logger.warning(f"⚠️ Errore parsing lightning deal: {e}")
-                continue
+        data = self._call_api('product', params, method='GET')
         
-        return parsed
-    
-    def _parse_browsing_deals(self, raw_deals: List[Dict]) -> List[Dict]:
-        """Parse Browsing Deals standard"""
-        parsed = []
+        if not data or 'products' not in data or not data['products']:
+            return None
         
-        for deal in raw_deals:
-            try:
-                current_price = deal.get('current', [None, None])[0]
-                list_price = deal.get('current', [None, None])[1]
-                
-                if not current_price or not list_price or list_price <= current_price:
-                    continue
-                
-                discount_percent = int(((list_price - current_price) / list_price) * 100)
-                
-                if discount_percent < MIN_DISCOUNT:
-                    continue
-                
-                rating = deal.get('rating', 0) / 10.0 if deal.get('rating') else 0
-                review_count = deal.get('reviewCount', 0)
-                
-                if rating < MIN_RATING or review_count < MIN_REVIEWS:
-                    continue
-                
-                parsed.append({
-                    'asin': deal.get('asin'),
-                    'title': deal.get('title', '').strip(),
-                    'current_price': current_price / 100,
-                    'list_price': list_price / 100,
-                    'discount_percent': discount_percent,
-                    'rating': round(rating, 1),
-                    'review_count': review_count,
-                    'image_url': f"https://images-na.ssl-images-amazon.com/images/I/{deal.get('imagesCSV', '').split(',')[0]}" if deal.get('imagesCSV') else None,
-                    'is_lightning': False,
-                    'hours_left': None,
-                    'percent_claimed': None,
-                    'is_prime': False
-                })
-                
-            except Exception as e:
-                logger.warning(f"⚠️ Errore parsing browsing deal: {e}")
-                continue
-        
-        logger.info(f"📊 Parsing completato: {len(parsed)} prodotti validi")
-        return parsed
+        return data['products'][0]
 
 # ═══════════════════════════════════════════════════════════════
-# 📱 TELEGRAM PUBLISHER - COPY OTTIMIZZATO
+# 📦 PRODUCT PROCESSOR
+# ═══════════════════════════════════════════════════════════════
+
+class ProductProcessor:
+    """Processa prodotti da API Keepa"""
+    
+    @staticmethod
+    def extract_from_lightning_deal(deal: Dict) -> Optional[Dict]:
+        """Estrae info da Lightning Deal Object"""
+        try:
+            return {
+                'asin': deal.get('asin'),
+                'title': deal.get('title', 'Prodotto in offerta'),
+                'image': deal.get('image'),
+                'current_price': deal.get('dealPrice', 0),
+                'original_price': deal.get('currentPrice', 0),
+                'rating': deal.get('rating', 0),
+                'reviews': deal.get('totalReviews', 0),
+                'discount': deal.get('percentOff', 0),
+                'is_lightning': True,
+                'end_time': deal.get('endTime'),
+                'percent_claimed': deal.get('percentClaimed', 0)
+            }
+        except Exception as e:
+            logger.error(f"❌ Errore parsing Lightning Deal: {e}")
+            return None
+    
+    @staticmethod
+    def extract_from_browsing_deal(deal: Dict) -> Optional[Dict]:
+        """Estrae info da Browsing Deal Object"""
+        try:
+            # Prezzi in formato Keepa (cent * 100)
+            current = deal.get('current', [None])[0]
+            avg90 = deal.get('avg90', [None])[0]
+            
+            if not current or not avg90:
+                return None
+            
+            current_price = current / 100
+            original_price = avg90 / 100
+            discount = round(((original_price - current_price) / original_price) * 100)
+            
+            return {
+                'asin': deal.get('asin'),
+                'title': deal.get('title', 'Prodotto in offerta'),
+                'image': deal.get('imagesCSV', '').split(',')[0] if deal.get('imagesCSV') else None,
+                'current_price': current_price,
+                'original_price': original_price,
+                'rating': deal.get('rating', 0) / 10 if deal.get('rating') else 0,
+                'reviews': deal.get('reviewCount', 0),
+                'discount': discount,
+                'is_lightning': False,
+                'sales_rank': deal.get('salesRank', 0)
+            }
+        except Exception as e:
+            logger.error(f"❌ Errore parsing Browsing Deal: {e}")
+            return None
+    
+    @staticmethod
+    def is_valid_product(product: Dict, min_discount: int) -> bool:
+        """Valida prodotto"""
+        if not product or not product.get('asin'):
+            return False
+        
+        # Verifica prezzi validi
+        if not product.get('current_price') or product['current_price'] <= 0:
+            return False
+        
+        # Verifica sconto minimo
+        if product.get('discount', 0) < min_discount:
+            return False
+        
+        # Verifica rating minimo (3.0)
+        if product.get('rating', 0) < 30:
+            return False
+        
+        # Verifica range prezzo (5€ - 1000€)
+        price = product['current_price']
+        if price < 5 or price > 1000:
+            return False
+        
+        return True
+
+# ═══════════════════════════════════════════════════════════════
+# 📢 TELEGRAM PUBLISHER
 # ═══════════════════════════════════════════════════════════════
 
 class TelegramPublisher:
-    """Publisher con copy ad alta conversione"""
-    
-    EMOJI_MAP = {
-        'tech': '🖥️',
-        'moda': '👗'
-    }
+    """Pubblica prodotti su Telegram"""
     
     def __init__(self, bot_token: str):
         self.bot = Bot(token=bot_token)
-        self.amazon_tag = AMAZON_TAG
     
-    def create_amazon_link(self, asin: str) -> str:
-        return f"https://www.amazon.it/dp/{asin}?tag={self.amazon_tag}"
-    
-    def format_message(self, product: Dict, channel_type: str) -> str:
-        """
-        Copy ottimizzato con:
-        - Urgenza (per Lightning Deals)
-        - Scarcity (% venduto)
-        - Social proof (rating + recensioni)
-        - Call to action forte
-        """
-        emoji = self.EMOJI_MAP.get(channel_type, '🔥')
+    def format_message(self, product: Dict, channel_emoji: List[str]) -> str:
+        """Formatta messaggio Telegram"""
+        emoji = random.choice(channel_emoji)
+        title = product['title'][:120] + "..." if len(product['title']) > 120 else product['title']
         
-        # Tronca titolo
-        title = product['title']
-        if len(title) > 75:
-            title = title[:72] + '...'
+        discount_emoji = "🔥" if product['discount'] >= 50 else "⚡"
         
-        # Prezzi formattati
-        old_price = f"{product['list_price']:.2f}".replace('.', ',')
-        new_price = f"{product['current_price']:.2f}".replace('.', ',')
+        message = f"{emoji} **{discount_emoji} -{product['discount']}% | {title}**\n\n"
+        message += f"💰 **Prezzo:** ~~{product['original_price']:.2f}€~~ → **{product['current_price']:.2f}€**\n"
         
-        # MESSAGGIO OTTIMIZZATO
-        lines = []
-        
-        # Header con urgenza per Lightning Deals
-        if product.get('is_lightning'):
-            if product.get('hours_left') and product['hours_left'] < 6:
-                lines.append(f"⚡ <b>OFFERTA LAMPO - SCADE TRA {int(product['hours_left'])}H!</b>")
+        if product.get('rating'):
+            stars = "⭐" * int(product['rating'] / 20)
+            message += f"{stars} {product['rating']/10:.1f}/5"
+            if product.get('reviews'):
+                message += f" ({product['reviews']} recensioni)\n"
             else:
-                lines.append(f"⚡ <b>OFFERTA LAMPO ATTIVA!</b>")
-        else:
-            lines.append(f"🔥 <b>OFFERTA SPECIALE -{product['discount_percent']}%</b>")
+                message += "\n"
         
-        lines.append("")
+        if product.get('is_lightning'):
+            message += f"\n⚡ **OFFERTA LAMPO** - Scade tra poco!\n"
+            if product.get('percent_claimed'):
+                message += f"🏃 {product['percent_claimed']}% già venduto\n"
         
-        # Titolo prodotto in grassetto
-        lines.append(f"<b>{title}</b>")
-        lines.append("")
+        message += f"\n👉 [Acquista Ora](https://www.amazon.it/dp/{product['asin']}?tag={AMAZON_TAG})"
         
-        # Prezzo prominente
-        lines.append(f"💰 <s>{old_price}€</s> → <b>{new_price}€</b>")
-        
-        # Social proof
-        stars = "⭐" * int(product['rating'])
-        lines.append(f"{stars} {product['rating']}/5 ({product['review_count']} recensioni)")
-        
-        # Scarcity per Lightning Deals
-        if product.get('is_lightning') and product.get('percent_claimed'):
-            claimed = product['percent_claimed']
-            if claimed > 50:
-                lines.append(f"⚠️ <b>{claimed}% già venduto!</b>")
-        
-        # Badge Prime
-        if product.get('is_prime'):
-            lines.append("✅ Prime")
-        
-        lines.append("")
-        
-        # Call to action forte
-        lines.append(f"👉 <a href=\"{self.create_amazon_link(product['asin'])}\"><b>APPROFITTA DELL'OFFERTA</b></a>")
-        
-        return "\n".join(lines)
+        return message
     
-    def send_deal(self, product: Dict, channel_type: str) -> bool:
-        channel_id = CHANNELS.get(channel_type)
-        if not channel_id:
-            logger.error(f"❌ Canale {channel_type} non configurato")
-            return False
-        
+    def publish_product(self, product: Dict, channel_id: str, channel_emoji: List[str]) -> bool:
+        """Pubblica prodotto su canale"""
         try:
-            message = self.format_message(product, channel_type)
+            message = self.format_message(product, channel_emoji)
             
-            # SEMPRE con foto (visual first!)
-            if product.get('image_url'):
+            # Prepara immagine
+            photo = product.get('image')
+            if photo and not photo.startswith('http'):
+                photo = f"https://images-na.ssl-images-amazon.com/images/I/{photo}"
+            
+            # Invia messaggio
+            if photo:
                 self.bot.send_photo(
                     chat_id=channel_id,
-                    photo=product['image_url'],
+                    photo=photo,
                     caption=message,
-                    parse_mode=ParseMode.HTML
+                    parse_mode='Markdown'
                 )
             else:
                 self.bot.send_message(
                     chat_id=channel_id,
                     text=message,
-                    parse_mode=ParseMode.HTML,
+                    parse_mode='Markdown',
                     disable_web_page_preview=False
                 )
             
@@ -461,196 +418,113 @@ class TelegramPublisher:
             return True
             
         except TelegramError as e:
+            logger.error(f"❌ Errore Telegram: {e}")
+            return False
+        except Exception as e:
             logger.error(f"❌ Errore pubblicazione: {e}")
             return False
-    
-    def send_startup_message(self):
-        """Messaggio di test all'avvio"""
-        logger.info("📨 Invio messaggi startup...")
-        
-        for channel_type, channel_id in CHANNELS.items():
-            try:
-                emoji = self.EMOJI_MAP.get(channel_type, '🤖')
-                message = f"{emoji} <b>BOT VUCCIARO ATTIVO</b>\n\n"
-                message += f"✅ Sistema avviato con successo!\n"
-                message += f"⚡ Mix ottimizzato: 70% Lightning + 30% Browsing\n"
-                message += f"⏰ Post ogni {POST_INTERVAL_MINUTES} minuti ({START_HOUR}:00-{END_HOUR}:00)\n"
-                message += f"🎯 Filtri: sconto ≥{MIN_DISCOUNT}%, rating ≥{MIN_RATING}"
-                
-                self.bot.send_message(
-                    chat_id=channel_id,
-                    text=message,
-                    parse_mode=ParseMode.HTML
-                )
-                logger.info(f"✅ Startup inviato su {channel_type}")
-            except Exception as e:
-                logger.error(f"❌ Errore startup su {channel_type}: {e}")
 
 # ═══════════════════════════════════════════════════════════════
-# 🎯 SISTEMA PRINCIPALE
+# 🎯 MAIN BOT LOGIC
 # ═══════════════════════════════════════════════════════════════
 
-class VucciaroSystem:
-    """Sistema con mix intelligente Lightning + Browsing"""
+class VucciaroBot:
+    """Bot principale con gestione automatica"""
     
     def __init__(self):
-        self.keepa = KeepaClient(KEEPA_API_KEY)
-        self.telegram = TelegramPublisher(TELEGRAM_BOT_TOKEN)
+        self.keepa = KeepaAPI(KEEPA_API_KEY)
+        self.publisher = TelegramPublisher(TELEGRAM_BOT_TOKEN)
+        self.processor = ProductProcessor()
         self.channel_rotation = list(CHANNELS.keys())
         random.shuffle(self.channel_rotation)
         self.current_channel_index = 0
-        
-    def get_next_channel(self) -> str:
-        channel = self.channel_rotation[self.current_channel_index]
+    
+    def is_active_hours(self) -> bool:
+        """Verifica se è ora attiva (07:00-23:00)"""
+        now = datetime.now().time()
+        return dt_time(7, 0) <= now <= dt_time(23, 0)
+    
+    def get_next_channel(self) -> Dict:
+        """Rotazione canali"""
+        channel_key = self.channel_rotation[self.current_channel_index]
         self.current_channel_index = (self.current_channel_index + 1) % len(self.channel_rotation)
-        return channel
+        return CHANNELS[channel_key]
     
-    def fetch_deals_for_channel(self, channel: str) -> List[Dict]:
-        """Mix 70% Lightning + 30% Browsing"""
-        
-        # Decide quale API usare
-        use_lightning = random.randint(1, 100) <= LIGHTNING_PERCENTAGE
-        
-        if use_lightning:
-            # Lightning Deals - 1 token
-            cache_key = "lightning_deals"
-            cached = get_cached_data(cache_key, max_age_hours=0.5)  # Cache 30 min
-            
-            if cached:
-                return cached
-            
-            deals = self.keepa.fetch_lightning_deals()
-            
-            if deals:
-                cache_data(cache_key, deals)
-            
-            return deals
-        else:
-            # Browsing Deals - 5 token
-            category_ids = CATEGORY_MAP.get(channel, [])
-            if not category_ids:
-                return []
-            
-            cache_key = f"browsing_{channel}"
-            cached = get_cached_data(cache_key, max_age_hours=2)  # Cache 2h
-            
-            if cached:
-                return cached
-            
-            deals = self.keepa.fetch_browsing_deals(category_ids)
-            
-            if deals:
-                cache_data(cache_key, deals)
-            
-            return deals
-    
-    def select_best_deal(self, deals: List[Dict]) -> Optional[Dict]:
-        """Seleziona il deal migliore"""
-        
-        def score(deal):
-            s = deal['discount_percent'] * 0.4
-            s += deal['rating'] * 5
-            s += min(deal['review_count'] / 10, 50)
-            
-            # Bonus per Lightning Deals
-            if deal.get('is_lightning'):
-                s += 20
-                
-                # Bonus urgenza
-                if deal.get('hours_left') and deal['hours_left'] < 3:
-                    s += 30
-            
-            return s
-        
-        deals_sorted = sorted(deals, key=score, reverse=True)
-        
-        # Trova primo non pubblicato
-        for deal in deals_sorted:
-            if not is_product_posted(deal['asin'], hours=48):
-                return deal
-        
-        return None
-    
-    def publish_next_deal(self):
-        """Pubblica prossimo deal"""
-        
-        now = datetime.now()
-        if not (START_HOUR <= now.hour < END_HOUR):
-            logger.info(f"⏸️ Fuori orario ({START_HOUR}-{END_HOUR})")
+    def find_and_publish_deal(self):
+        """Trova e pubblica offerta"""
+        if not self.is_active_hours():
+            logger.info("⏸️ Fuori orario attivo (07:00-23:00)")
             return
         
         channel = self.get_next_channel()
-        logger.info(f"🎯 Turno: {channel}")
+        logger.info(f"\n{'='*60}")
+        logger.info(f"🎯 Canale attivo: {channel['name']} ({channel['id']})")
+        logger.info(f"{'='*60}")
         
-        deals = self.fetch_deals_for_channel(channel)
+        # Strategia: Prima Lightning, poi Browsing
+        product = None
         
-        if not deals:
-            logger.warning(f"⚠️ Nessun deal per {channel}")
-            return
+        # 1. Prova Lightning Deals
+        lightning_deals = self.keepa.get_lightning_deals()
+        for deal in lightning_deals:
+            p = self.processor.extract_from_lightning_deal(deal)
+            if p and self.processor.is_valid_product(p, channel['min_discount']) and not is_product_published(p['asin']):
+                product = p
+                logger.info("⚡ Trovato Lightning Deal valido!")
+                break
         
-        deal = self.select_best_deal(deals)
-        
-        if not deal:
-            logger.warning(f"⚠️ Tutti i deal già pubblicati")
-            return
-        
-        # Pubblica
-        if self.telegram.send_deal(deal, channel):
-            mark_as_posted(
-                deal['asin'],
-                channel,
-                deal['title'],
-                int(deal['current_price'] * 100),
-                deal['discount_percent']
+        # 2. Se no Lightning, usa Browsing Deals
+        if not product:
+            logger.info("🔍 Nessun Lightning Deal, provo Browsing Deals...")
+            browsing_deals = self.keepa.get_browsing_deals(
+                channel['categories'],
+                channel['min_discount']
             )
             
-            deal_type = "⚡ Lightning" if deal.get('is_lightning') else "🔍 Browsing"
-            logger.info(f"✅ Pubblicato {deal_type}: {deal['title'][:40]}")
+            for deal in browsing_deals:
+                p = self.processor.extract_from_browsing_deal(deal)
+                if p and self.processor.is_valid_product(p, channel['min_discount']) and not is_product_published(p['asin']):
+                    product = p
+                    logger.info("🔍 Trovato Browsing Deal valido!")
+                    break
+        
+        # 3. Pubblica
+        if product:
+            success = self.publisher.publish_product(
+                product,
+                channel['id'],
+                channel['emoji']
+            )
+            
+            if success:
+                mark_product_published(product['asin'], channel['id'])
+                logger.info(f"✅ Prodotto pubblicato: {product['asin']}")
+            else:
+                logger.error("❌ Pubblicazione fallita")
+        else:
+            logger.warning("⚠️ Nessun prodotto valido trovato")
+    
+    def run(self):
+        """Loop principale"""
+        logger.info("🚀 Vucciaro Bot avviato!")
+        logger.info(f"⏰ Orario attivo: 07:00-23:00")
+        logger.info(f"⏱️ Frequenza: ogni 20 minuti")
+        logger.info(f"📺 Canali: {len(CHANNELS)}\n")
+        
+        while True:
+            try:
+                self.find_and_publish_deal()
+            except Exception as e:
+                logger.error(f"❌ Errore nel ciclo principale: {e}")
+            
+            logger.info("⏱️ Attendo 20 minuti...\n")
+            time.sleep(1200)  # 20 minuti
 
 # ═══════════════════════════════════════════════════════════════
-# 🚀 MAIN
+# 🎬 MAIN
 # ═══════════════════════════════════════════════════════════════
-
-def main():
-    if not TELEGRAM_BOT_TOKEN or not KEEPA_API_KEY:
-        logger.error("❌ Variabili mancanti!")
-        sys.exit(1)
-    
-    logger.info("=" * 70)
-    logger.info("🌌 VUCCIARO UNIVERSE - Sistema Mix Ottimizzato")
-    logger.info("=" * 70)
-    logger.info(f"📱 Canali: Tech + Moda")
-    logger.info(f"⚡ Mix: {LIGHTNING_PERCENTAGE}% Lightning + {100-LIGHTNING_PERCENTAGE}% Browsing")
-    logger.info(f"⏰ Post ogni {POST_INTERVAL_MINUTES}min ({START_HOUR}:00-{END_HOUR}:00)")
-    logger.info(f"💰 Filtri: ≥{MIN_DISCOUNT}%, ≥{MIN_RATING}⭐, ≥{MIN_REVIEWS} rec.")
-    logger.info("=" * 70)
-    
-    init_database()
-    system = VucciaroSystem()
-    
-    # Messaggio startup
-    system.telegram.send_startup_message()
-    
-    # Scheduler
-    schedule.every(POST_INTERVAL_MINUTES).minutes.do(system.publish_next_deal)
-    
-    # Prima esecuzione
-    logger.info("🚀 Prima pubblicazione...")
-    system.publish_next_deal()
-    
-    # Loop
-    logger.info("♻️ Bot attivo!")
-    
-    while True:
-        try:
-            schedule.run_pending()
-            time.sleep(1)
-        except KeyboardInterrupt:
-            logger.info("\n⏹️ Bot arrestato")
-            break
-        except Exception as e:
-            logger.error(f"❌ Errore: {e}")
-            time.sleep(60)
 
 if __name__ == "__main__":
-    main()
+    init_database()
+    bot = VucciaroBot()
+    bot.run()
